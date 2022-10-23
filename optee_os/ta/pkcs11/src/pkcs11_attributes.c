@@ -106,6 +106,16 @@ check_mechanism_against_processing(struct pkcs11_session *session,
 		allowed = !mechanism_is_one_shot_only(mechanism_type);
 		break;
 
+	case PKCS11_FUNC_STEP_UPDATE_KEY:
+		assert(function == PKCS11_FUNCTION_DIGEST);
+
+		if (session->processing->always_authen &&
+		    !session->processing->relogged)
+			return PKCS11_CKR_USER_NOT_LOGGED_IN;
+
+		allowed = true;
+		break;
+
 	case PKCS11_FUNC_STEP_FINAL:
 		if (session->processing->always_authen &&
 		    !session->processing->relogged)
@@ -122,7 +132,7 @@ check_mechanism_against_processing(struct pkcs11_session *session,
 		EMSG("Processing %#x/%s not permitted (%u/%u)",
 		     (unsigned int)mechanism_type, id2str_proc(mechanism_type),
 		     function, step);
-		return PKCS11_CKR_KEY_FUNCTION_NOT_PERMITTED;
+		return PKCS11_CKR_MECHANISM_INVALID;
 	}
 
 	return PKCS11_CKR_OK;
@@ -353,8 +363,11 @@ static const uint32_t symm_key_boolprops[] = {
 
 static const uint32_t symm_key_opt_or_null[] = {
 	PKCS11_CKA_WRAP_TEMPLATE, PKCS11_CKA_UNWRAP_TEMPLATE,
-	PKCS11_CKA_DERIVE_TEMPLATE,
-	PKCS11_CKA_VALUE, PKCS11_CKA_VALUE_LEN,
+	PKCS11_CKA_DERIVE_TEMPLATE, PKCS11_CKA_VALUE,
+};
+
+static const uint32_t symm_key_optional[] = {
+	PKCS11_CKA_VALUE_LEN,
 };
 
 /* PKCS#11 specification for any asymmetric public key (+any_key_xxx) */
@@ -521,8 +534,13 @@ static enum pkcs11_rc create_symm_key_attributes(struct obj_attrs **out,
 	if (rc)
 		return rc;
 
-	return set_attributes_opt_or_null(out, temp, symm_key_opt_or_null,
-					  ARRAY_SIZE(symm_key_opt_or_null));
+	rc = set_attributes_opt_or_null(out, temp, symm_key_opt_or_null,
+					ARRAY_SIZE(symm_key_opt_or_null));
+	if (rc)
+		return rc;
+
+	return set_optional_attributes(out, temp, symm_key_optional,
+				       ARRAY_SIZE(symm_key_optional));
 }
 
 static enum pkcs11_rc create_data_attributes(struct obj_attrs **out,
@@ -661,6 +679,56 @@ static enum pkcs11_rc create_priv_key_attributes(struct obj_attrs **out,
 					  opt_or_null_count);
 }
 
+static enum pkcs11_rc
+sanitize_symm_key_attributes(struct obj_attrs **temp,
+			     enum processing_func function)
+{
+	enum pkcs11_rc rc = PKCS11_CKR_OK;
+	uint32_t a_size = 0;
+
+	assert(get_class(*temp) == PKCS11_CKO_SECRET_KEY);
+
+	rc = get_attribute_ptr(*temp, PKCS11_CKA_VALUE, NULL, &a_size);
+
+	switch (get_key_type(*temp)) {
+	case PKCS11_CKK_GENERIC_SECRET:
+	case PKCS11_CKK_AES:
+	case PKCS11_CKK_MD5_HMAC:
+	case PKCS11_CKK_SHA_1_HMAC:
+	case PKCS11_CKK_SHA256_HMAC:
+	case PKCS11_CKK_SHA384_HMAC:
+	case PKCS11_CKK_SHA512_HMAC:
+	case PKCS11_CKK_SHA224_HMAC:
+		switch (function) {
+		case PKCS11_FUNCTION_IMPORT:
+			/* CKA_VALUE is a mandatory with C_CreateObject */
+			if (rc || a_size == 0)
+				return PKCS11_CKR_TEMPLATE_INCONSISTENT;
+
+			if (get_attribute_ptr(*temp, PKCS11_CKA_VALUE_LEN, NULL,
+					      NULL) != PKCS11_RV_NOT_FOUND)
+				return PKCS11_CKR_TEMPLATE_INCONSISTENT;
+
+			return add_attribute(temp, PKCS11_CKA_VALUE_LEN,
+					     &a_size, sizeof(uint32_t));
+		case PKCS11_FUNCTION_GENERATE:
+			if (rc != PKCS11_RV_NOT_FOUND)
+				return PKCS11_CKR_TEMPLATE_INCONSISTENT;
+			break;
+		default:
+			break;
+		}
+		break;
+	default:
+		EMSG("Invalid key type %#"PRIx32"/%s",
+		     get_key_type(*temp), id2str_key_type(get_key_type(*temp)));
+
+		return PKCS11_CKR_TEMPLATE_INCONSISTENT;
+	}
+
+	return PKCS11_CKR_OK;
+}
+
 /*
  * Create an attribute list for a new object from a template and a parent
  * object (optional) for an object generation function (generate, copy,
@@ -682,7 +750,7 @@ static enum pkcs11_rc create_priv_key_attributes(struct obj_attrs **out,
 enum pkcs11_rc
 create_attributes_from_template(struct obj_attrs **out, void *template,
 				size_t template_size,
-				struct obj_attrs *parent __unused,
+				struct obj_attrs *parent,
 				enum processing_func function,
 				enum pkcs11_mechanism_id mecha,
 				enum pkcs11_class_id template_class __unused)
@@ -702,6 +770,9 @@ create_attributes_from_template(struct obj_attrs **out, void *template,
 	switch (function) {
 	case PKCS11_FUNCTION_GENERATE:
 	case PKCS11_FUNCTION_IMPORT:
+	case PKCS11_FUNCTION_MODIFY:
+	case PKCS11_FUNCTION_DERIVE:
+	case PKCS11_FUNCTION_COPY:
 		break;
 	default:
 		TEE_Panic(TEE_ERROR_NOT_SUPPORTED);
@@ -729,10 +800,28 @@ create_attributes_from_template(struct obj_attrs **out, void *template,
 		}
 	}
 
+	/*
+	 * Check and remove duplicates if any and create a new temporary
+	 * template
+	 */
 	rc = sanitize_client_object(&temp, template, template_size, class,
 				    type);
 	if (rc)
 		goto out;
+
+	/*
+	 * For function type modify and copy return the created template
+	 * from here. Rest of the code below is for creating objects
+	 * or generating keys.
+	 */
+	switch (function) {
+	case PKCS11_FUNCTION_MODIFY:
+	case PKCS11_FUNCTION_COPY:
+		*out = temp;
+		return rc;
+	default:
+		break;
+	}
 
 	/*
 	 * Check if class and type in temp are consistent with the mechanism
@@ -767,6 +856,9 @@ create_attributes_from_template(struct obj_attrs **out, void *template,
 		rc = create_data_attributes(&attrs, temp);
 		break;
 	case PKCS11_CKO_SECRET_KEY:
+		rc = sanitize_symm_key_attributes(&temp, function);
+		if (rc)
+			goto out;
 		rc = create_symm_key_attributes(&attrs, temp);
 		break;
 	case PKCS11_CKO_PUBLIC_KEY:
@@ -802,6 +894,7 @@ create_attributes_from_template(struct obj_attrs **out, void *template,
 		local = PKCS11_TRUE;
 		break;
 	case PKCS11_FUNCTION_IMPORT:
+	case PKCS11_FUNCTION_DERIVE:
 	default:
 		local = PKCS11_FALSE;
 		break;
@@ -818,6 +911,14 @@ create_attributes_from_template(struct obj_attrs **out, void *template,
 		never_extract = PKCS11_FALSE;
 
 		switch (function) {
+		case PKCS11_FUNCTION_DERIVE:
+			always_sensitive =
+				get_bool(parent, PKCS11_CKA_ALWAYS_SENSITIVE) &&
+				get_bool(attrs, PKCS11_CKA_SENSITIVE);
+			never_extract =
+			       get_bool(parent, PKCS11_CKA_NEVER_EXTRACTABLE) &&
+			       !get_bool(attrs, PKCS11_CKA_EXTRACTABLE);
+			break;
 		case PKCS11_FUNCTION_GENERATE:
 			always_sensitive = get_bool(attrs,
 						    PKCS11_CKA_SENSITIVE);
@@ -893,13 +994,22 @@ static enum pkcs11_rc check_attrs_misc_integrity(struct obj_attrs *head)
 
 bool object_is_private(struct obj_attrs *head)
 {
-	if (get_class(head) == PKCS11_CKO_PRIVATE_KEY)
-		return true;
+	return get_bool(head, PKCS11_CKA_PRIVATE);
+}
 
-	if (get_bool(head, PKCS11_CKA_PRIVATE))
-		return true;
+bool object_is_token(struct obj_attrs *head)
+{
+	return get_bool(head, PKCS11_CKA_TOKEN);
+}
 
-	return false;
+bool object_is_modifiable(struct obj_attrs *head)
+{
+	return get_bool(head, PKCS11_CKA_MODIFIABLE);
+}
+
+bool object_is_copyable(struct obj_attrs *head)
+{
+	return get_bool(head, PKCS11_CKA_COPYABLE);
 }
 
 /*
@@ -912,11 +1022,10 @@ enum pkcs11_rc check_access_attrs_against_token(struct pkcs11_session *session,
 
 	switch (get_class(head)) {
 	case PKCS11_CKO_SECRET_KEY:
+	case PKCS11_CKO_PRIVATE_KEY:
 	case PKCS11_CKO_PUBLIC_KEY:
 	case PKCS11_CKO_DATA:
-		private = get_bool(head, PKCS11_CKA_PRIVATE);
-		break;
-	case PKCS11_CKO_PRIVATE_KEY:
+		private = object_is_private(head);
 		break;
 	default:
 		return PKCS11_CKR_KEY_FUNCTION_NOT_PERMITTED;
@@ -1006,6 +1115,8 @@ enum pkcs11_rc check_created_attrs_against_processing(uint32_t proc_id,
 	 */
 	switch (proc_id) {
 	case PKCS11_PROCESSING_IMPORT:
+	case PKCS11_CKM_AES_ECB_ENCRYPT_DATA:
+	case PKCS11_CKM_AES_CBC_ENCRYPT_DATA:
 		assert(check_attr_bval(proc_id, head, PKCS11_CKA_LOCAL, false));
 		break;
 	case PKCS11_CKM_GENERIC_SECRET_KEY_GEN:
@@ -1032,6 +1143,7 @@ enum pkcs11_rc check_created_attrs_against_processing(uint32_t proc_id,
 	return PKCS11_CKR_OK;
 }
 
+/* Return min and max key size supported for a key_type in bytes */
 static void get_key_min_max_sizes(enum pkcs11_key_type key_type,
 				  uint32_t *min_key_size,
 				  uint32_t *max_key_size)
@@ -1068,8 +1180,8 @@ static void get_key_min_max_sizes(enum pkcs11_key_type key_type,
 		break;
 	}
 
-	mechanism_supported_key_sizes(mechanism, min_key_size,
-				      max_key_size);
+	mechanism_supported_key_sizes_bytes(mechanism, min_key_size,
+					    max_key_size);
 }
 
 enum pkcs11_rc check_created_attrs(struct obj_attrs *key1,
@@ -1120,6 +1232,11 @@ enum pkcs11_rc check_created_attrs(struct obj_attrs *key1,
 		     key_length, min_key_size, max_key_size);
 
 		return PKCS11_CKR_KEY_SIZE_RANGE;
+	}
+
+	if (secret && get_key_type(secret) == PKCS11_CKK_AES) {
+		if (key_length != 16 && key_length != 24 && key_length != 32)
+			return PKCS11_CKR_KEY_SIZE_RANGE;
 	}
 
 	return PKCS11_CKR_OK;
@@ -1208,6 +1325,24 @@ check_parent_attrs_against_processing(enum pkcs11_mechanism_id proc_id,
 
 		return PKCS11_CKR_KEY_FUNCTION_NOT_PERMITTED;
 
+	case PKCS11_CKM_AES_ECB_ENCRYPT_DATA:
+	case PKCS11_CKM_AES_CBC_ENCRYPT_DATA:
+		if (key_class != PKCS11_CKO_SECRET_KEY &&
+		    key_type != PKCS11_CKK_AES)
+			return PKCS11_CKR_KEY_FUNCTION_NOT_PERMITTED;
+
+		if (get_bool(head, PKCS11_CKA_ENCRYPT)) {
+			/*
+			 * Intentionally refuse to proceed despite
+			 * PKCS#11 specifications v2.40 and v3.0 not expecting
+			 * this behavior to avoid potential security issue
+			 * where keys derived by these mechanisms can be
+			 * revealed by doing data encryption using parent key.
+			 */
+			return PKCS11_CKR_FUNCTION_FAILED;
+		}
+
+		break;
 	case PKCS11_CKM_MD5_HMAC:
 	case PKCS11_CKM_SHA_1_HMAC:
 	case PKCS11_CKM_SHA224_HMAC:
@@ -1302,4 +1437,287 @@ bool attribute_is_exportable(struct pkcs11_attribute_head *req_attr,
 	}
 
 	return true;
+}
+
+static bool attr_is_modifiable_any_key(struct pkcs11_attribute_head *attr)
+{
+	switch (attr->id) {
+	case PKCS11_CKA_ID:
+	case PKCS11_CKA_START_DATE:
+	case PKCS11_CKA_END_DATE:
+	case PKCS11_CKA_DERIVE:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static bool attr_is_modifiable_secret_key(struct pkcs11_attribute_head *attr,
+					  struct pkcs11_session *session,
+					  struct pkcs11_object *obj)
+{
+	switch (attr->id) {
+	case PKCS11_CKA_ENCRYPT:
+	case PKCS11_CKA_DECRYPT:
+	case PKCS11_CKA_SIGN:
+	case PKCS11_CKA_VERIFY:
+	case PKCS11_CKA_WRAP:
+	case PKCS11_CKA_UNWRAP:
+		return true;
+	/* Can't be modified once set to CK_FALSE - 12 in Table 10 */
+	case PKCS11_CKA_EXTRACTABLE:
+		return get_bool(obj->attributes, attr->id);
+	/* Can't be modified once set to CK_TRUE - 11 in Table 10 */
+	case PKCS11_CKA_SENSITIVE:
+	case PKCS11_CKA_WRAP_WITH_TRUSTED:
+		return !get_bool(obj->attributes, attr->id);
+	/* Change in CKA_TRUSTED can only be done by SO */
+	case PKCS11_CKA_TRUSTED:
+		return pkcs11_session_is_so(session);
+	case PKCS11_CKA_NEVER_EXTRACTABLE:
+	case PKCS11_CKA_ALWAYS_SENSITIVE:
+		return false;
+	default:
+		return false;
+	}
+}
+
+static bool attr_is_modifiable_public_key(struct pkcs11_attribute_head *attr,
+					  struct pkcs11_session *session,
+					  struct pkcs11_object *obj __unused)
+{
+	switch (attr->id) {
+	case PKCS11_CKA_SUBJECT:
+	case PKCS11_CKA_ENCRYPT:
+	case PKCS11_CKA_VERIFY:
+	case PKCS11_CKA_VERIFY_RECOVER:
+	case PKCS11_CKA_WRAP:
+		return true;
+	case PKCS11_CKA_TRUSTED:
+		/* Change in CKA_TRUSTED can only be done by SO */
+		return pkcs11_session_is_so(session);
+	default:
+		return false;
+	}
+}
+
+static bool attr_is_modifiable_private_key(struct pkcs11_attribute_head *attr,
+					   struct pkcs11_session *sess __unused,
+					   struct pkcs11_object *obj)
+{
+	switch (attr->id) {
+	case PKCS11_CKA_SUBJECT:
+	case PKCS11_CKA_DECRYPT:
+	case PKCS11_CKA_SIGN:
+	case PKCS11_CKA_SIGN_RECOVER:
+	case PKCS11_CKA_UNWRAP:
+	/*
+	 * TBD: Revisit if we don't support PKCS11_CKA_PUBLIC_KEY_INFO
+	 * Specification mentions that if this attribute is
+	 * supplied as part of a template for C_CreateObject, C_CopyObject or
+	 * C_SetAttributeValue for a private key, the token MUST verify
+	 * correspondence between the private key data and the public key data
+	 * as supplied in CKA_PUBLIC_KEY_INFO. This needs to be
+	 * taken care of when this object type will be implemented
+	 */
+	case PKCS11_CKA_PUBLIC_KEY_INFO:
+		return true;
+	/* Can't be modified once set to CK_FALSE - 12 in Table 10 */
+	case PKCS11_CKA_EXTRACTABLE:
+		return get_bool(obj->attributes, attr->id);
+	/* Can't be modified once set to CK_TRUE - 11 in Table 10 */
+	case PKCS11_CKA_SENSITIVE:
+	case PKCS11_CKA_WRAP_WITH_TRUSTED:
+		return !get_bool(obj->attributes, attr->id);
+	case PKCS11_CKA_NEVER_EXTRACTABLE:
+	case PKCS11_CKA_ALWAYS_SENSITIVE:
+		return false;
+	default:
+		return false;
+	}
+}
+
+static bool attribute_is_modifiable(struct pkcs11_session *session,
+				    struct pkcs11_attribute_head *req_attr,
+				    struct pkcs11_object *obj,
+				    enum pkcs11_class_id class,
+				    enum processing_func function)
+{
+	/* Check modifiable attributes common to any object */
+	switch (req_attr->id) {
+	case PKCS11_CKA_LABEL:
+		return true;
+	case PKCS11_CKA_TOKEN:
+	case PKCS11_CKA_MODIFIABLE:
+	case PKCS11_CKA_DESTROYABLE:
+	case PKCS11_CKA_PRIVATE:
+		return function == PKCS11_FUNCTION_COPY;
+	case PKCS11_CKA_COPYABLE:
+		/*
+		 * Specification mentions that if the attribute value is false
+		 * it can't be set to true. Reading this we assume that it
+		 * should be possible to modify this attribute even though this
+		 * is not marked as modifiable in Table 10 if done in right
+		 * direction i.e from TRUE -> FALSE.
+		 */
+		return get_bool(obj->attributes, req_attr->id);
+	default:
+		break;
+	}
+
+	/* Attribute checking based on class type */
+	switch (class) {
+	case PKCS11_CKO_SECRET_KEY:
+	case PKCS11_CKO_PUBLIC_KEY:
+	case PKCS11_CKO_PRIVATE_KEY:
+		if (attr_is_modifiable_any_key(req_attr))
+			return true;
+		if (class == PKCS11_CKO_SECRET_KEY &&
+		    attr_is_modifiable_secret_key(req_attr, session, obj))
+			return true;
+		if (class == PKCS11_CKO_PUBLIC_KEY &&
+		    attr_is_modifiable_public_key(req_attr, session, obj))
+			return true;
+		if (class == PKCS11_CKO_PRIVATE_KEY &&
+		    attr_is_modifiable_private_key(req_attr, session, obj))
+			return true;
+		break;
+	case PKCS11_CKO_DATA:
+		/* None of the data object attributes are modifiable */
+		return false;
+	default:
+		break;
+	}
+
+	return false;
+}
+
+enum pkcs11_rc check_attrs_against_modification(struct pkcs11_session *session,
+						struct obj_attrs *head,
+						struct pkcs11_object *obj,
+						enum processing_func function)
+{
+	enum pkcs11_class_id class = PKCS11_CKO_UNDEFINED_ID;
+	char *cur = NULL;
+	char *end = NULL;
+	size_t len = 0;
+
+	class = get_class(obj->attributes);
+
+	cur = (char *)head + sizeof(struct obj_attrs);
+	end = cur + head->attrs_size;
+
+	for (; cur < end; cur += len) {
+		/* Structure aligned copy of the pkcs11_ref in the object */
+		struct pkcs11_attribute_head cli_ref = { };
+
+		TEE_MemMove(&cli_ref, cur, sizeof(cli_ref));
+		len = sizeof(cli_ref) + cli_ref.size;
+
+		/*
+		 * Check 1 - Check if attribute belongs to the object
+		 * The obj->attributes has all the attributes in
+		 * it which are allowed for an object.
+		 */
+		if (get_attribute_ptr(obj->attributes, cli_ref.id, NULL,
+				      NULL) == PKCS11_RV_NOT_FOUND)
+			return PKCS11_CKR_ATTRIBUTE_TYPE_INVALID;
+
+		/* Check 2 - Is attribute modifiable */
+		if (!attribute_is_modifiable(session, &cli_ref, obj, class,
+					     function))
+			return PKCS11_CKR_ATTRIBUTE_READ_ONLY;
+
+		/*
+		 * Checks for modification in PKCS11_CKA_TOKEN and
+		 * PKCS11_CKA_PRIVATE are required for PKCS11_FUNCTION_COPY
+		 * only, so skip them for PKCS11_FUNCTION_MODIFY.
+		 */
+		if (function == PKCS11_FUNCTION_MODIFY)
+			continue;
+
+		/*
+		 * An attempt to copy an object to a token will fail for
+		 * RO session
+		 */
+		if (cli_ref.id == PKCS11_CKA_TOKEN &&
+		    get_bool(head, PKCS11_CKA_TOKEN)) {
+			if (!pkcs11_session_is_read_write(session)) {
+				DMSG("Can't copy to token in a RO session");
+				return PKCS11_CKR_SESSION_READ_ONLY;
+			}
+		}
+
+		if (cli_ref.id == PKCS11_CKA_PRIVATE) {
+			bool parent_priv =
+				get_bool(obj->attributes, cli_ref.id);
+			bool obj_priv = get_bool(head, cli_ref.id);
+
+			/*
+			 * If PKCS11_CKA_PRIVATE is being set to TRUE from
+			 * FALSE, user has to be logged in
+			 */
+			if (!parent_priv && obj_priv) {
+				if ((pkcs11_session_is_public(session) ||
+				     pkcs11_session_is_so(session)))
+					return PKCS11_CKR_USER_NOT_LOGGED_IN;
+			}
+
+			/*
+			 * Restriction added - Even for Copy, do not allow
+			 * modification of CKA_PRIVATE from TRUE to FALSE
+			 */
+			if (parent_priv && !obj_priv)
+				return PKCS11_CKR_TEMPLATE_INCONSISTENT;
+		}
+	}
+
+	return PKCS11_CKR_OK;
+}
+
+static enum pkcs11_rc set_secret_key_data(struct obj_attrs **head, void *data,
+					  size_t key_size)
+{
+	uint32_t size = sizeof(uint32_t);
+	uint32_t key_length = 0;
+	enum pkcs11_rc rc = PKCS11_CKR_GENERAL_ERROR;
+
+	/* Get key size if present in template */
+	rc = get_attribute(*head, PKCS11_CKA_VALUE_LEN, &key_length, &size);
+	if (rc && rc != PKCS11_RV_NOT_FOUND)
+		return rc;
+
+	if (key_length) {
+		if (key_size < key_length)
+			return PKCS11_CKR_DATA_LEN_RANGE;
+	} else {
+		key_length = key_size;
+		rc = set_attribute(head, PKCS11_CKA_VALUE_LEN, &key_length,
+				   sizeof(uint32_t));
+		if (rc)
+			return rc;
+	}
+
+	/* Now we can check the VALUE_LEN field */
+	rc = check_created_attrs(*head, NULL);
+	if (rc)
+		return rc;
+
+	/* Remove the default empty value attribute if found */
+	rc = remove_empty_attribute(head, PKCS11_CKA_VALUE);
+	if (rc != PKCS11_CKR_OK && rc != PKCS11_RV_NOT_FOUND)
+		return PKCS11_CKR_GENERAL_ERROR;
+
+	return add_attribute(head, PKCS11_CKA_VALUE, data, key_length);
+}
+
+enum pkcs11_rc set_key_data(struct obj_attrs **head, void *data,
+			    size_t key_size)
+{
+	switch (get_class(*head)) {
+	case PKCS11_CKO_SECRET_KEY:
+		return set_secret_key_data(head, data, key_size);
+	default:
+		return PKCS11_CKR_GENERAL_ERROR;
+	}
 }

@@ -98,7 +98,7 @@ CFG_MSG_LONG_PREFIX_MASK ?= 0x1a
 CFG_WITH_SOFTWARE_PRNG ?= y
 
 # Number of threads
-CFG_NUM_THREADS ?= 2
+CFG_NUM_THREADS ?= 4
 
 # API implementation version
 CFG_TEE_API_VERSION ?= GPD-1.1-dev
@@ -270,7 +270,7 @@ CFG_TA_ASLR_MAX_OFFSET_PAGES ?= 128
 # When this flag is enabled, the early init code will introduce a random
 # offset when mapping TEE Core. ASLR makes the exploitation of memory
 # corruption vulnerabilities more difficult.
-CFG_CORE_ASLR ?= y
+CFG_CORE_ASLR ?= n
 
 # Load user TAs from the REE filesystem via tee-supplicant
 CFG_REE_FS_TA ?= y
@@ -324,8 +324,19 @@ ifeq ($(CFG_EMBEDDED_TS),y)
 $(call force,CFG_ZLIB,y)
 endif
 
+# By default the early TAs are compressed in the TEE binary, it is possible to
+# not compress them with CFG_EARLY_TA_COMPRESS=n
+CFG_EARLY_TA_COMPRESS ?= y
+
 # Enable paging, requires SRAM, can't be enabled by default
 CFG_WITH_PAGER ?= n
+
+# Use the pager for user TAs
+CFG_PAGED_USER_TA ?= $(CFG_WITH_PAGER)
+
+# If paging of user TAs, that is, R/W paging default to enable paging of
+# TAG and IV in order to reduce heap usage.
+CFG_CORE_PAGE_TAG_AND_IV ?= $(CFG_PAGED_USER_TA)
 
 # Runtime lock dependency checker: ensures that a proper locking hierarchy is
 # used in the TEE core when acquiring and releasing mutexes. Any violation will
@@ -340,9 +351,6 @@ CFG_LOCKDEP_RECORD_STACK ?= y
 # BestFit algorithm in bget reduces the fragmentation of the heap when running
 # with the pager enabled or lockdep
 CFG_CORE_BGET_BESTFIT ?= $(call cfg-one-enabled, CFG_WITH_PAGER CFG_LOCKDEP)
-
-# Use the pager for user TAs
-CFG_PAGED_USER_TA ?= $(CFG_WITH_PAGER)
 
 # Enable support for detected undefined behavior in C
 # Uses a lot of memory, can't be enabled by default
@@ -362,8 +370,8 @@ CFG_WITH_STACK_CANARIES ?= y
 CFG_CORE_DEBUG_CHECK_STACKS ?= n
 
 # Use when the default stack allocations are not sufficient.
-CFG_STACK_THREAD_EXTRA ?= 0
-CFG_STACK_TMP_EXTRA ?= 0
+CFG_STACK_THREAD_EXTRA ?= 4096
+CFG_STACK_TMP_EXTRA ?= 4096
 
 # Device Tree support
 #
@@ -417,7 +425,7 @@ CFG_TA_BGET_TEST ?= $(CFG_ENABLE_EMBEDDED_TESTS)
 CFG_BOOT_SECONDARY_REQUEST ?= n
 
 # Default heap size for Core, 64 kB
-CFG_CORE_HEAP_SIZE ?= 65536
+CFG_CORE_HEAP_SIZE ?= 2097152 # 2MB
 
 # Default size of nexus heap. 16 kB. Used only if CFG_VIRTUALIZATION
 # is enabled
@@ -581,6 +589,9 @@ $(call force,CFG_CORE_MBEDTLS_MPI,y)
 # Enable PKCS#11 TA's TEE Identity based authentication support
 CFG_PKCS11_TA_AUTH_TEE_IDENTITY ?= y
 
+# Enable PKCS#11 TA's C_DigestKey support
+CFG_PKCS11_TA_ALLOW_DIGEST_KEY ?= y
+
 # Enable virtualization support. OP-TEE will not work without compatible
 # hypervisor if this option is enabled.
 CFG_VIRTUALIZATION ?= n
@@ -610,10 +621,12 @@ CFG_CORE_TPM_EVENT_LOG ?= n
 # CFG_SCMI_MSG_CLOCK embeds SCMI clock protocol support.
 # CFG_SCMI_MSG_RESET_DOMAIN embeds SCMI reset domain protocol support.
 # CFG_SCMI_MSG_SMT embeds SMT based message buffer of communication channel
+# CFG_SCMI_MSG_VOLTAGE_DOMAIN embeds SCMI voltage domain protocol support.
 CFG_SCMI_MSG_DRIVERS ?= n
 CFG_SCMI_MSG_CLOCK ?= n
 CFG_SCMI_MSG_RESET_DOMAIN ?= n
 CFG_SCMI_MSG_SMT ?= n
+CFG_SCMI_MSG_VOLTAGE_DOMAIN ?= n
 
 ifneq ($(CFG_STMM_PATH),)
 $(call force,CFG_WITH_STMM_SP,y)

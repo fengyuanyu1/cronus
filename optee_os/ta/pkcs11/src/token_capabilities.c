@@ -80,6 +80,13 @@ static const struct pkcs11_mechachism_modes pkcs11_modes[] = {
 	MECHANISM(PKCS11_CKM_AES_KEY_GEN, PKCS11_CKFM_GENERATE, ANY_PART),
 	MECHANISM(PKCS11_CKM_GENERIC_SECRET_KEY_GEN, PKCS11_CKFM_GENERATE,
 		  ANY_PART),
+	/* Digest */
+	MECHANISM(PKCS11_CKM_MD5, PKCS11_CKFM_DIGEST, ANY_PART),
+	MECHANISM(PKCS11_CKM_SHA_1, PKCS11_CKFM_DIGEST, ANY_PART),
+	MECHANISM(PKCS11_CKM_SHA224, PKCS11_CKFM_DIGEST, ANY_PART),
+	MECHANISM(PKCS11_CKM_SHA256, PKCS11_CKFM_DIGEST, ANY_PART),
+	MECHANISM(PKCS11_CKM_SHA384, PKCS11_CKFM_DIGEST, ANY_PART),
+	MECHANISM(PKCS11_CKM_SHA512, PKCS11_CKFM_DIGEST, ANY_PART),
 	/* HMAC */
 	MECHANISM(PKCS11_CKM_MD5_HMAC, CKFM_AUTH_NO_RECOVER, ANY_PART),
 	MECHANISM(PKCS11_CKM_SHA_1_HMAC, CKFM_AUTH_NO_RECOVER, ANY_PART),
@@ -164,7 +171,7 @@ bool mechanism_is_one_shot_only(uint32_t mechanism_type)
 
 /*
  * Arrays that centralizes the IDs and processing flags for mechanisms
- * supported by each embedded token. Currently none.
+ * supported by each embedded token.
  */
 const struct pkcs11_mechachism_modes token_mechanism[] = {
 	TA_MECHANISM(PKCS11_CKM_AES_ECB, CKFM_CIPHER),
@@ -176,6 +183,12 @@ const struct pkcs11_mechachism_modes token_mechanism[] = {
 	TA_MECHANISM(PKCS11_CKM_AES_CBC_ENCRYPT_DATA, PKCS11_CKFM_DERIVE),
 	TA_MECHANISM(PKCS11_CKM_AES_KEY_GEN, PKCS11_CKFM_GENERATE),
 	TA_MECHANISM(PKCS11_CKM_GENERIC_SECRET_KEY_GEN, PKCS11_CKFM_GENERATE),
+	TA_MECHANISM(PKCS11_CKM_MD5, PKCS11_CKFM_DIGEST),
+	TA_MECHANISM(PKCS11_CKM_SHA_1, PKCS11_CKFM_DIGEST),
+	TA_MECHANISM(PKCS11_CKM_SHA224, PKCS11_CKFM_DIGEST),
+	TA_MECHANISM(PKCS11_CKM_SHA256, PKCS11_CKFM_DIGEST),
+	TA_MECHANISM(PKCS11_CKM_SHA384, PKCS11_CKFM_DIGEST),
+	TA_MECHANISM(PKCS11_CKM_SHA512, PKCS11_CKFM_DIGEST),
 	TA_MECHANISM(PKCS11_CKM_MD5_HMAC, CKFM_AUTH_NO_RECOVER),
 	TA_MECHANISM(PKCS11_CKM_SHA_1_HMAC, CKFM_AUTH_NO_RECOVER),
 	TA_MECHANISM(PKCS11_CKM_SHA224_HMAC, CKFM_AUTH_NO_RECOVER),
@@ -238,8 +251,9 @@ uint32_t mechanism_supported_flags(enum pkcs11_mechanism_id id)
 	return 0;
 }
 
-void mechanism_supported_key_sizes(uint32_t proc_id, uint32_t *min_key_size,
-				   uint32_t *max_key_size)
+void pkcs11_mechanism_supported_key_sizes(uint32_t proc_id,
+					  uint32_t *min_key_size,
+					  uint32_t *max_key_size)
 {
 	switch (proc_id) {
 	case PKCS11_CKM_GENERIC_SECRET_KEY_GEN:
@@ -284,5 +298,18 @@ void mechanism_supported_key_sizes(uint32_t proc_id, uint32_t *min_key_size,
 		*min_key_size = 0;
 		*max_key_size = 0;
 		break;
+	}
+}
+
+void mechanism_supported_key_sizes_bytes(uint32_t proc_id,
+					 uint32_t *min_key_size,
+					 uint32_t *max_key_size)
+{
+	pkcs11_mechanism_supported_key_sizes(proc_id, min_key_size,
+					     max_key_size);
+
+	if (proc_id == PKCS11_CKM_GENERIC_SECRET_KEY_GEN) {
+		*min_key_size = (*min_key_size + 7) / 8;
+		*max_key_size = (*max_key_size + 7) / 8;
 	}
 }

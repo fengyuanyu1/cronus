@@ -18,9 +18,19 @@
 # DBG_HASH   BIT32(7)  // Hash trace
 # DBG_RSA    BIT32(8)  // RSA trace
 # DBG_CIPHER BIT32(9)  // Cipher trace
+# DBG_DMAOBJ BIT32(11) // DMA Object Trace
 CFG_DBG_CAAM_TRACE ?= BIT32(1)
 CFG_DBG_CAAM_DESC ?= 0x0
 CFG_DBG_CAAM_BUF ?= 0x0
+
+CFG_CAAM_64BIT ?= y
+
+# Number of entries by which SGT entries must be allocated
+# On layerscape, SGT entries are loaded by burst of 4
+$(call force, CFG_CAAM_SGT_ALIGN,4)
+
+# Enable the BLOB module used for the hardware unique key
+CFG_NXP_CAAM_BLOB_DRV ?= y
 
 #
 # CAAM Job Ring configuration
@@ -30,13 +40,51 @@ CFG_DBG_CAAM_BUF ?= 0x0
 $(call force,CFG_JR_BLOCK_SIZE,0x10000)
 $(call force,CFG_JR_INDEX,2)  # Default JR index used
 
-ifneq (,$(filter $(PLATFORM_FLAVOR),ls1046ardb))
-$(call force,CFG_JR_INT,137)  # Default JR IT Number (105 + 32) = 137
-endif
-
-ifneq (,$(filter $(PLATFORM_FLAVOR),lx2160ardb))
+ifneq (,$(filter $(PLATFORM_FLAVOR),ls1012afrwy))
+$(call force,CFG_CAAM_BIG_ENDIAN,y)
+$(call force,CFG_JR_INT,105)
+else ifneq (,$(filter $(PLATFORM_FLAVOR),ls1012ardb))
+$(call force,CFG_CAAM_BIG_ENDIAN,y)
+$(call force,CFG_JR_INT,105)
+else ifneq (,$(filter $(PLATFORM_FLAVOR),ls1021atwr))
+$(call force,CFG_CAAM_LITTLE_ENDIAN,y)
+$(call force,CFG_JR_INT,137)
+else ifneq (,$(filter $(PLATFORM_FLAVOR),ls1021aqds))
+$(call force,CFG_CAAM_LITTLE_ENDIAN,y)
+$(call force,CFG_JR_INT,137)
+else ifneq (,$(filter $(PLATFORM_FLAVOR),ls1043ardb))
+$(call force,CFG_CAAM_BIG_ENDIAN,y)
+$(call force,CFG_JR_INT,105)
+else ifneq (,$(filter $(PLATFORM_FLAVOR),ls1046ardb))
+$(call force,CFG_CAAM_BIG_ENDIAN,y)
+$(call force,CFG_JR_INT,137)
+else ifneq (,$(filter $(PLATFORM_FLAVOR),ls1088ardb))
+$(call force,CFG_CAAM_LITTLE_ENDIAN,y)
+$(call force,CFG_JR_INT,175)
+$(call force,CFG_NXP_CAAM_SGT_V2,y)
+else ifneq (,$(filter $(PLATFORM_FLAVOR),ls2088ardb))
+$(call force,CFG_CAAM_LITTLE_ENDIAN,y)
+$(call force,CFG_JR_INT,175)
+$(call force,CFG_NXP_CAAM_SGT_V2,y)
+else ifneq (,$(filter $(PLATFORM_FLAVOR),ls1028ardb))
+$(call force,CFG_CAAM_LITTLE_ENDIAN,y)
+$(call force,CFG_JR_INT,175)
+$(call force,CFG_NXP_CAAM_SGT_V2,y)
+else ifneq (,$(filter $(PLATFORM_FLAVOR),lx2160aqds))
+$(call force,CFG_CAAM_LITTLE_ENDIAN,y)
 $(call force,CFG_JR_INT, 174)
 $(call force,CFG_NB_JOBS_QUEUE, 80)  # Default JR index used
+$(call force,CFG_NXP_CAAM_SGT_V2,y)
+else ifneq (,$(filter $(PLATFORM_FLAVOR),lx2160ardb))
+$(call force,CFG_CAAM_LITTLE_ENDIAN,y)
+$(call force,CFG_JR_INT, 174)
+$(call force,CFG_NB_JOBS_QUEUE, 80)  # Default JR index used
+$(call force,CFG_NXP_CAAM_SGT_V2,y)
+endif
+
+# Version of the SGT implementation to use
+ifneq ($(CFG_NXP_CAAM_SGT_V2),y)
+$(call force,CFG_NXP_CAAM_SGT_V1,y)
 endif
 
 #
@@ -72,7 +120,10 @@ cryphw-one-enabled = $(call cfg-one-enabled, \
 # Definition of the HW and Cryto Driver Algorithm supported by all LS
 $(eval $(call cryphw-enable-drv-hw, HASH))
 $(eval $(call cryphw-enable-drv-hw, CIPHER))
+$(call force, CFG_NXP_CAAM_HMAC_DRV,y)
+$(call force, CFG_NXP_CAAM_CMAC_DRV,y)
 $(eval $(call cryphw-enable-drv-hw, RSA))
+$(eval $(call cryphw-enable-drv-hw, ECC))
 
 # Define the RSA Private Key Format used by the CAAM
 #   Format #1: (n, d)
@@ -80,7 +131,8 @@ $(eval $(call cryphw-enable-drv-hw, RSA))
 #   Format #3: (p, q, dp, dq, qp)
 CFG_NXP_CAAM_RSA_KEY_FORMAT ?= 3
 
-$(call force, CFG_NXP_CAAM_ACIPHER_DRV, $(call cryphw-one-enabled, RSA))
+$(call force, CFG_NXP_CAAM_ACIPHER_DRV, $(call cryphw-one-enabled, RSA ECC))
+$(call force, CFG_CRYPTO_DRV_MAC, $(call cryphw-one-enabled, HMAC CMAC))
 
 #
 # Enable Cryptographic Driver interface

@@ -6,10 +6,13 @@
 
 #include <arm.h>
 #include <assert.h>
+#include <config.h>
 #include <drivers/gic.h>
 #include <keep.h>
+#include <kernel/dt.h>
 #include <kernel/interrupt.h>
 #include <kernel/panic.h>
+#include <libfdt.h>
 #include <util.h>
 #include <io.h>
 #include <trace.h>
@@ -205,6 +208,29 @@ void gic_init(struct gic_data *gd, vaddr_t gicc_base __maybe_unused,
 #endif
 }
 
+static int gic_dt_get_irq(const uint32_t *properties, int len)
+{
+	int it_num = DT_INFO_INVALID_INTERRUPT;
+
+	if (!properties || len < 2)
+		return DT_INFO_INVALID_INTERRUPT;
+
+	it_num = fdt32_to_cpu(properties[1]);
+
+	switch (fdt32_to_cpu(properties[0])) {
+	case 1:
+		it_num += 16;
+		break;
+	case 0:
+		it_num += 32;
+		break;
+	default:
+		it_num = DT_INFO_INVALID_INTERRUPT;
+	}
+
+	return it_num;
+}
+
 void gic_init_base_addr(struct gic_data *gd, vaddr_t gicc_base __maybe_unused,
 			vaddr_t gicd_base)
 {
@@ -212,6 +238,9 @@ void gic_init_base_addr(struct gic_data *gd, vaddr_t gicc_base __maybe_unused,
 	gd->gicd_base = gicd_base;
 	gd->max_it = probe_max_it(gicc_base, gicd_base);
 	gd->chip.ops = &gic_ops;
+
+	if (IS_ENABLED(CFG_DT))
+		gd->chip.dt_get_irq = gic_dt_get_irq;
 }
 
 static void gic_it_add(struct gic_data *gd, size_t it)
@@ -381,7 +410,7 @@ void gic_dump_state(struct gic_data *gd)
 #endif
 	DMSG("GICD_CTLR: 0x%x", io_read32(gd->gicd_base + GICD_CTLR));
 
-	for (i = 0; i < (int)gd->max_it; i++) {
+	for (i = 0; i <= (int)gd->max_it; i++) {
 		if (gic_it_is_enabled(gd, i)) {
 			DMSG("irq%d: enabled, group:%d, target:%x", i,
 			     gic_it_get_group(gd, i), gic_it_get_target(gd, i));
@@ -397,7 +426,7 @@ void gic_it_handle(struct gic_data *gd)
 	iar = gic_read_iar(gd);
 	id = iar & GICC_IAR_IT_ID_MASK;
 
-	if (id < gd->max_it)
+	if (id <= gd->max_it)
 		itr_handle(id);
 	else
 		DMSG("ignoring interrupt %" PRIu32, id);
@@ -410,7 +439,7 @@ static void gic_op_add(struct itr_chip *chip, size_t it,
 {
 	struct gic_data *gd = container_of(chip, struct gic_data, chip);
 
-	if (it >= gd->max_it)
+	if (it > gd->max_it)
 		panic();
 
 	gic_it_add(gd, it);
@@ -423,7 +452,7 @@ static void gic_op_enable(struct itr_chip *chip, size_t it)
 {
 	struct gic_data *gd = container_of(chip, struct gic_data, chip);
 
-	if (it >= gd->max_it)
+	if (it > gd->max_it)
 		panic();
 
 	gic_it_enable(gd, it);
@@ -433,7 +462,7 @@ static void gic_op_disable(struct itr_chip *chip, size_t it)
 {
 	struct gic_data *gd = container_of(chip, struct gic_data, chip);
 
-	if (it >= gd->max_it)
+	if (it > gd->max_it)
 		panic();
 
 	gic_it_disable(gd, it);
@@ -443,7 +472,7 @@ static void gic_op_raise_pi(struct itr_chip *chip, size_t it)
 {
 	struct gic_data *gd = container_of(chip, struct gic_data, chip);
 
-	if (it >= gd->max_it)
+	if (it > gd->max_it)
 		panic();
 
 	gic_it_set_pending(gd, it);
@@ -454,7 +483,7 @@ static void gic_op_raise_sgi(struct itr_chip *chip, size_t it,
 {
 	struct gic_data *gd = container_of(chip, struct gic_data, chip);
 
-	if (it >= gd->max_it)
+	if (it > gd->max_it)
 		panic();
 
 	if (it < NUM_NS_SGI)
@@ -467,7 +496,7 @@ static void gic_op_set_affinity(struct itr_chip *chip, size_t it,
 {
 	struct gic_data *gd = container_of(chip, struct gic_data, chip);
 
-	if (it >= gd->max_it)
+	if (it > gd->max_it)
 		panic();
 
 	gic_it_set_cpu_mask(gd, it, cpu_mask);

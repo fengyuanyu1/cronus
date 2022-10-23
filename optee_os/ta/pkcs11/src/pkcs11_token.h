@@ -171,7 +171,6 @@ struct pkcs11_find_objects {
  * @token - Token this session belongs to
  * @handle - Identifier of the session published to the client
  * @object_list - Entry of the session objects list
- * @object_handle_db - Database for object handles published by the session
  * @state - R/W SO, R/W user, RO user, R/W public, RO public.
  * @processing - Reference to initialized processing context if any
  * @find_ctx - Reference to active search context (null if no active search)
@@ -182,7 +181,6 @@ struct pkcs11_session {
 	struct ck_token *token;
 	enum pkcs11_mechanism_id handle;
 	struct object_list object_list;
-	struct handle_db object_handle_db;
 	enum pkcs11_session_state state;
 	struct active_processing *processing;
 	struct pkcs11_find_objects *find_ctx;
@@ -198,6 +196,9 @@ struct ck_token *get_token(unsigned int token_id);
 /* Return token identified from token instance address */
 unsigned int get_token_id(struct ck_token *token);
 
+/* Return client's (shared) object handle database associated with session */
+struct handle_db *get_object_handle_db(struct pkcs11_session *session);
+
 /* Access to persistent database */
 struct ck_token *init_persistent_db(unsigned int token_id);
 void update_persistent_db(struct ck_token *token);
@@ -206,6 +207,7 @@ void close_persistent_db(struct ck_token *token);
 /* Load and release persistent object attributes in memory */
 enum pkcs11_rc load_persistent_object_attributes(struct pkcs11_object *obj);
 void release_persistent_object_attributes(struct pkcs11_object *obj);
+enum pkcs11_rc update_persistent_object_attributes(struct pkcs11_object *obj);
 
 enum pkcs11_rc hash_pin(enum pkcs11_user_type user, const uint8_t *pin,
 			size_t pin_size, uint32_t *salt,
@@ -260,6 +262,7 @@ enum pkcs11_rc get_persistent_objects_list(struct ck_token *token,
 /*
  * Pkcs11 session support
  */
+struct session_list *get_session_list(struct pkcs11_session *session);
 struct pkcs11_client *tee_session2client(void *tee_session);
 struct pkcs11_client *register_client(void);
 void unregister_client(struct pkcs11_client *client);
@@ -336,5 +339,9 @@ enum pkcs11_rc entry_ck_login(struct pkcs11_client *client,
 			      uint32_t ptypes, TEE_Param *params);
 enum pkcs11_rc entry_ck_logout(struct pkcs11_client *client,
 			       uint32_t ptypes, TEE_Param *params);
+enum pkcs11_rc entry_ck_seed_random(struct pkcs11_client *client,
+				    uint32_t ptypes, TEE_Param *params);
+enum pkcs11_rc entry_ck_generate_random(struct pkcs11_client *client,
+					uint32_t ptypes, TEE_Param *params);
 
 #endif /*PKCS11_TA_PKCS11_TOKEN_H*/

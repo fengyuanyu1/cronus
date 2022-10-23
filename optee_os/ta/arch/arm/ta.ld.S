@@ -56,6 +56,13 @@ SECTIONS {
 	.tdata : { *(.tdata .tdata.* .gnu.linkonce.td.*) }
 	.tbss : { *(.tbss .tbss.* .gnu.linkonce.tb.*) *(.tcommon) }
 	.got : { *(.got.plt) *(.got) }
+	.init_array     :
+	{
+		PROVIDE_HIDDEN (__init_array_start = .);
+		KEEP (*(SORT_BY_INIT_PRIORITY(.init_array.*) SORT_BY_INIT_PRIORITY(.ctors.*)))
+		KEEP (*(.init_array EXCLUDE_FILE (*crtbegin.o *crtbegin?.o *crtend.o *crtend?.o ) .ctors))
+		PROVIDE_HIDDEN (__init_array_end = .);
+	}
 	.rel.text : { *(.rel.text) *(.rel.gnu.linkonce.t*) }
 	.rela.text : { *(.rela.text) *(.rela.gnu.linkonce.t*) }
 	.rel.data : { *(.rel.data) *(.rel.gnu.linkonce.d*) }

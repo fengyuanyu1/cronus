@@ -303,6 +303,49 @@ TEE_Result TA_InvokeCommandEntryPoint(void *tee_session, uint32_t cmd,
 	case PKCS11_CMD_GET_OBJECT_SIZE:
 		rc = entry_get_object_size(client, ptypes, params);
 		break;
+	case PKCS11_CMD_SET_ATTRIBUTE_VALUE:
+		rc = entry_set_attribute_value(client, ptypes, params);
+		break;
+	case PKCS11_CMD_COPY_OBJECT:
+		rc = entry_copy_object(client, ptypes, params);
+		break;
+	case PKCS11_CMD_SEED_RANDOM:
+		rc = entry_ck_seed_random(client, ptypes, params);
+		break;
+	case PKCS11_CMD_GENERATE_RANDOM:
+		rc = entry_ck_generate_random(client, ptypes, params);
+		break;
+	case PKCS11_CMD_DERIVE_KEY:
+		rc = entry_processing_key(client, ptypes, params,
+					  PKCS11_FUNCTION_DERIVE);
+		break;
+	case PKCS11_CMD_RELEASE_ACTIVE_PROCESSING:
+		rc = entry_release_active_processing(client, ptypes, params);
+		break;
+	case PKCS11_CMD_DIGEST_INIT:
+		rc = entry_processing_init(client, ptypes, params,
+					   PKCS11_FUNCTION_DIGEST);
+		break;
+	case PKCS11_CMD_DIGEST_UPDATE:
+		rc = entry_processing_step(client, ptypes, params,
+					   PKCS11_FUNCTION_DIGEST,
+					   PKCS11_FUNC_STEP_UPDATE);
+		break;
+	case PKCS11_CMD_DIGEST_KEY:
+		rc = entry_processing_step(client, ptypes, params,
+					   PKCS11_FUNCTION_DIGEST,
+					   PKCS11_FUNC_STEP_UPDATE_KEY);
+		break;
+	case PKCS11_CMD_DIGEST_ONESHOT:
+		rc = entry_processing_step(client, ptypes, params,
+					   PKCS11_FUNCTION_DIGEST,
+					   PKCS11_FUNC_STEP_ONESHOT);
+		break;
+	case PKCS11_CMD_DIGEST_FINAL:
+		rc = entry_processing_step(client, ptypes, params,
+					   PKCS11_FUNCTION_DIGEST,
+					   PKCS11_FUNC_STEP_FINAL);
+		break;
 	default:
 		EMSG("Command %#"PRIx32" is not supported", cmd);
 		return TEE_ERROR_NOT_SUPPORTED;

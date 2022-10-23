@@ -32,7 +32,42 @@ srcs-$(CFG_STPMIC1) += stpmic1.c
 srcs-$(CFG_BCM_HWRNG) += bcm_hwrng.c
 srcs-$(CFG_BCM_SOTP) += bcm_sotp.c
 srcs-$(CFG_BCM_GPIO) += bcm_gpio.c
+srcs-$(CFG_LS_I2C) += ls_i2c.c
+srcs-$(CFG_LS_GPIO) += ls_gpio.c
+srcs-$(CFG_LS_DSPI) += ls_dspi.c
+srcs-$(CFG_IMX_RNGB) += imx_rngb.c
 
 subdirs-y += crypto
 subdirs-$(CFG_BNXT_FW) += bnxt
 subdirs-$(CFG_SCMI_MSG_DRIVERS) += scmi-msg
+subdirs-y += imx
+
+subdirs-$(CONFIG_PCI) += pci
+
+srcs-y += lib/logic_pio.c lib/bitmap.c lib/kstrtox.c lib/string.c lib/hexdump.c lib/devres.c 
+srcs-y += lib/kobject.c lib/kobject_uevent.c lib/klist.c lib/cmdline.c lib/find_bit.c
+srcs-y += lib/idr.c lib/radix-tree.c lib/ctype.c lib/rbtree.c lib/sort.c lib/list_sort.c
+srcs-y += lib/xarray.c lib/uuid.c lib/refcount.c lib/kasprintf.c lib/hweight.c
+srcs-y += lib/scatterlist.c lib/llist.c lib/genalloc.c
+srcs-y += lib/pci_iomap.c
+srcs-y += base/firmware_loader/main.c
+subdirs-y += base/firmware_loader/builtin
+# srcs-y += lib/vsprintf.c
+# srcs-y +=  base/core.c base/bus.c base/dd.c base/driver.c base/class.c base/platform.c base/property.c
+# srcs-y += base/swnode.c
+srcs-y += base/platform.c base/core.c base/devres.c base/bus.c base/class.c base/devtmpfs.c
+srcs-y += mm/util.c mm/dma-mapping.c mm/cma.c mm/cache.S
+# mm/slab_common.c 
+# mm/slub.c
+srcs-y += kernel/resource.c kernel/cpu.c kernel/io_arm64.c
+# kernel/time/jiffies.c
+# srcs-y += fs/seq_file.c
+srcs-y += of/address.c of/base.c of/property.c of/platform.c
+
+srcs-y += edu.c
+
+subdirs-$(CONFIG_DRM) += gpu/drm
+subdirs-$(CONFIG_HAS_DMA) += dma
+subdirs-$(CONFIG_HAS_DMA) += dma-buf
+
+subdirs-y += vta

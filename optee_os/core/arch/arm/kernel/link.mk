@@ -37,7 +37,7 @@ link-script-cppflags := \
 		$(addprefix -I,$(incdirscore) $(link-out-dir)) \
 		$(cppflagscore))
 
-ldargs-all_objs := -T $(link-script-dummy) --no-check-sections \
+ldargs-all_objs := -T $(link-script-dummy) --no-check-sections --gc-sections \
 		   $(link-objs) $(link-ldadd) $(libgcccore)
 cleanfiles += $(link-out-dir)/all_objs.o
 $(link-out-dir)/all_objs.o: $(objs) $(libdeps) $(MAKEFILE_LIST)
@@ -233,4 +233,4 @@ $(link-out-dir)/tee-raw.bin: $(link-out-dir)/tee.elf scripts/gen_tee_bin.py
 cleanfiles += $(link-out-dir)/tee.srec
 $(link-out-dir)/tee.srec: $(link-out-dir)/tee-raw.bin
 	@$(cmd-echo-silent) '  SREC    $@'
-	$(q)$(OBJCOPYcore) -I binary -O srec $< $@
+	$(q)$(OBJCOPYcore) -I binary -O srec $(SRECFLAGS) $< $@

@@ -58,6 +58,8 @@ union dtv {
 
 /* Thread Control Block */
 struct tcb_head {
+	unsigned long pthread_stub;
+
 	/* Two words are reserved as per the "TLS variant 1" ABI */
 	union dtv *dtv;
 	unsigned long reserved;
@@ -83,6 +85,9 @@ static size_t _tls_size;
  * Called on application initialization and when additional shared objects are
  * loaded via dlopen().
  */
+
+extern void set_pthread_stub(unsigned long *stub);
+
 void __utee_tcb_init(void)
 {
 	struct dl_phdr_info *dlpi = NULL;
@@ -106,9 +111,10 @@ void __utee_tcb_init(void)
 
 	/* ELF modules currently cannot be unmapped */
 	assert(total_size >= _tls_size);
-
+#ifdef __LDELF__
 	if (total_size == _tls_size)
 		return;
+#endif
 
 	/* (Re-)allocate the TCB */
 	_tcb = realloc(_tcb, TCB_SIZE(total_size));
@@ -158,6 +164,7 @@ void __utee_tcb_init(void)
 	 */
 	write_tpidr_el0((vaddr_t)_tcb);
 #endif
+	set_pthread_stub(&_tcb->pthread_stub);
 }
 
 struct tls_index {

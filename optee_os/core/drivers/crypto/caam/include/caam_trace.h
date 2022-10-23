@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
- * Copyright 2019-2020 NXP
+ * Copyright 2019-2021 NXP
  *
  * Brief   CAAM driver trace include file.
  *         Definition of the internal driver trace macros.
@@ -36,6 +36,8 @@
 #define DBG_TRACE_RSA	 BIT32(8)  /* RSA trace */
 #define DBG_TRACE_CIPHER BIT32(9)  /* Cipher dump Buffer */
 #define DBG_TRACE_BLOB   BIT32(10) /* BLOB trace */
+#define DBG_TRACE_DMAOBJ BIT32(11) /* DMA Object trace */
+#define DBG_TRACE_ECC    BIT32(12) /* ECC trace */
 
 /* HAL */
 #if CAAM_DBG_TRACE(HAL)
@@ -164,7 +166,7 @@
 #else
 #define CIPHER_DUMPDESC(desc)
 #endif
-#if CAAM_DBG_TRACE(CIPHER)
+#if CAAM_DBG_BUF(CIPHER)
 #define CIPHER_DUMPBUF DRV_DUMPBUF
 #else
 #define CIPHER_DUMPBUF(...)
@@ -173,6 +175,36 @@
 #define CIPHER_TRACE(...)
 #define CIPHER_DUMPDESC(desc)
 #define CIPHER_DUMPBUF(...)
+#endif
+
+/* DMA Object */
+#if CAAM_DBG_TRACE(DMAOBJ)
+#define DMAOBJ_TRACE DRV_TRACE
+#else
+#define DMAOBJ_TRACE(...)
+#endif
+
+/* ECC */
+#if CAAM_DBG_TRACE(ECC)
+#define ECC_TRACE DRV_TRACE
+#if CAAM_DBG_DESC(ECC)
+#define ECC_DUMPDESC(desc)                                                     \
+	do {                                                                   \
+		ECC_TRACE("ECC Descriptor");                                   \
+		DRV_DUMPDESC(desc);                                            \
+	} while (0)
+#else
+#define ECC_DUMPDESC(desc) do { } while (0)
+#endif
+#if CAAM_DBG_BUF(ECC)
+#define ECC_DUMPBUF DRV_DUMPBUF
+#else
+#define ECC_DUMPBUF(...) do { } while (0)
+#endif
+#else
+#define ECC_TRACE(...) do { } while (0)
+#define ECC_DUMPDESC(desc) do { } while (0)
+#define ECC_DUMPBUF(...) do { } while (0)
 #endif
 
 #if (TRACE_LEVEL >= TRACE_DEBUG)

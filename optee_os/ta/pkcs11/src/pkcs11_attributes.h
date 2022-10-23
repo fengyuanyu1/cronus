@@ -106,12 +106,14 @@ enum processing_func {
 	PKCS11_FUNCTION_COPY,
 	PKCS11_FUNCTION_MODIFY,
 	PKCS11_FUNCTION_DESTROY,
+	PKCS11_FUNCTION_UNKNOWN,
 };
 
 enum processing_step {
 	PKCS11_FUNC_STEP_INIT,
 	PKCS11_FUNC_STEP_ONESHOT,
 	PKCS11_FUNC_STEP_UPDATE,
+	PKCS11_FUNC_STEP_UPDATE_KEY,
 	PKCS11_FUNC_STEP_FINAL,
 };
 
@@ -164,5 +166,26 @@ bool attribute_is_exportable(struct pkcs11_attribute_head *req_attr,
 			     struct pkcs11_object *obj);
 
 bool object_is_private(struct obj_attrs *head);
+
+bool object_is_token(struct obj_attrs *head);
+
+bool object_is_modifiable(struct obj_attrs *head);
+
+bool object_is_copyable(struct obj_attrs *head);
+
+/*
+ * Check the attributes passed in template against the attributes which can be
+ * modified. These are the attributes marked with * 8,10,11 or 12 in Table 10
+ * in PKCS #11 Cryptographic Token InterfaceBase Specification Version 2.40.
+ * Few attributes not with this marking but explicitly specified as modifiable
+ * in footnote of their tables are also considered to be modifiable
+ */
+enum pkcs11_rc check_attrs_against_modification(struct pkcs11_session *session,
+						struct obj_attrs *head,
+						struct pkcs11_object *obj,
+						enum processing_func function);
+
+enum pkcs11_rc set_key_data(struct obj_attrs **head, void *data,
+			    size_t key_size);
 
 #endif /*PKCS11_TA_PKCS11_ATTRIBUTES_H*/

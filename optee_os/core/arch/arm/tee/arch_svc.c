@@ -121,6 +121,14 @@ static const struct syscall_entry tee_svc_syscall_table[] = {
 	SYSCALL_ENTRY(syscall_not_supported),
 	SYSCALL_ENTRY(syscall_not_supported),
 	SYSCALL_ENTRY(syscall_cache_operation),
+	SYSCALL_ENTRY(syscall_posix_open),
+	SYSCALL_ENTRY(syscall_fs_read),
+	SYSCALL_ENTRY(syscall_fs_write),
+	SYSCALL_ENTRY(syscall_posix_close),
+	SYSCALL_ENTRY(syscall_dev_ioctl),
+	SYSCALL_ENTRY(syscall_mmap),
+	SYSCALL_ENTRY(syscall_mremap),
+	SYSCALL_ENTRY(syscall_munmap),
 };
 
 /*

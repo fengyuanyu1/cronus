@@ -129,6 +129,7 @@ void thread_std_smc_entry(uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3);
 uint32_t __thread_std_smc_entry(uint32_t a0, uint32_t a1, uint32_t a2,
 				uint32_t a3);
 
+void thread_sp_alloc_and_run(struct thread_smc_args *args);
 
 /*
  * Resumes execution of currently active thread by restoring context and
@@ -243,5 +244,9 @@ void thread_svc_handler(struct thread_svc_regs *regs);
 
 /* Frees the cache of allocated FS RPC memory */
 void thread_rpc_shm_cache_clear(struct thread_shm_cache *cache);
+
+int schedule_yield(void);
+void schedule_queue_info(void);
+
 #endif /*__ASSEMBLER__*/
 #endif /*THREAD_PRIVATE_H*/

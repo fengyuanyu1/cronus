@@ -655,7 +655,7 @@ static void op_attr_secret_value_clear(void *attr)
 	struct tee_cryp_obj_secret *key = attr;
 
 	key->key_size = 0;
-	memset(key + 1, 0, key->alloc_size);
+	memzero_explicit(key + 1, key->alloc_size);
 }
 
 static TEE_Result op_attr_bignum_from_user(void *attr, const void *buffer,
@@ -1739,7 +1739,7 @@ static TEE_Result check_pub_rsa_key(struct bignum *e)
 
 	crypto_bignum_bn2bin(e, bin_key);
 
-	if (!(bin_key[0] & 1)) /* key must be odd */
+	if (!(bin_key[n - 1] & 1)) /* key must be odd */
 		return TEE_ERROR_BAD_PARAMETERS;
 
 	if (n == 3) {
@@ -2832,13 +2832,13 @@ static TEE_Result get_sm2_kep_params(const TEE_Attribute *params,
 						  TEE_TYPE_SM2_KEP_PUBLIC_KEY,
 						  256);
 	if (res)
-		goto out;
+		return res;
 
 	res = crypto_acipher_alloc_ecc_public_key(peer_eph_key,
 						  TEE_TYPE_SM2_KEP_PUBLIC_KEY,
 						  256);
 	if (res)
-		goto out;
+		goto out_p;
 
 	peer_key->curve = TEE_ECC_CURVE_SM2;
 	peer_eph_key->curve = TEE_ECC_CURVE_SM2;
@@ -2907,8 +2907,9 @@ static TEE_Result get_sm2_kep_params(const TEE_Attribute *params,
 
 	return TEE_SUCCESS;
 out:
-	crypto_acipher_free_ecc_public_key(peer_key);
 	crypto_acipher_free_ecc_public_key(peer_eph_key);
+out_p:
+	crypto_acipher_free_ecc_public_key(peer_key);
 	return res;
 }
 #endif

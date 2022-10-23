@@ -16,6 +16,8 @@ static const void *tee_api_instance_data;
 
 /* System API - Internal Client API */
 
+long long elapsed_time_ms;
+
 static TEE_Result copy_param(struct utee_params *up, uint32_t param_types,
 			     const TEE_Param params[TEE_NUM_PARAMS],
 			     void **tmp_buf, size_t *tmp_len,

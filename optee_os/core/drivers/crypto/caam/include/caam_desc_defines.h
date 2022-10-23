@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
- * Copyright 2018-2020 NXP
+ * Copyright 2018-2021 NXP
  *
  * Brief   CAAM Descriptor defines.
  */
@@ -13,6 +13,7 @@
  * Common Command constants
  */
 #define CMD_TYPE(cmd)		SHIFT_U32((cmd) & 0x1F, 27)
+#define GET_CMD_TYPE(op)	((op) & (SHIFT_U32(0x1F, 27)))
 #define CMD_CLASS(val)		SHIFT_U32((val) & 0x3, 25)
 #define CLASS_NO		0x0
 #define CLASS_1			0x1
@@ -529,6 +530,9 @@
 #define CMD_SEQ_IN_TYPE		CMD_TYPE(0x1E)
 #define CMD_SEQ_OUT_TYPE	CMD_TYPE(0x1F)
 
+/* Extended Length */
+#define SEQ_EXT BIT(22)
+
 /* Length */
 #define SEQ_LENGTH(len)		SHIFT_U32((len) & 0xFFFF, 0)
 
@@ -636,6 +640,19 @@
 #define PDB_PKVERIFY_PD1	SHIFT_U32(1, 22)
 /* Shared Secret */
 #define PDB_SHARED_SECRET_PD1	SHIFT_U32(1, 25)
+
+/* SGT Flags Signature */
+#define PDB_SGT_PKSIGN_MSG	SHIFT_U32(1, 27)
+#define PDB_SGT_PKSIGN_SIGN_C	SHIFT_U32(1, 26)
+#define PDB_SGT_PKSIGN_SIGN_D	SHIFT_U32(1, 25)
+
+/* SGT Flags Verify */
+#define PDB_SGT_PKVERIF_MSG	SHIFT_U32(1, 27)
+#define PDB_SGT_PKVERIF_SIGN_C	SHIFT_U32(1, 26)
+#define PDB_SGT_PKVERIF_SIGN_D	SHIFT_U32(1, 25)
+
+/* SGT Flags Shared Secret */
+#define PDB_SGT_PKDH_SECRET	SHIFT_U32(1, 27)
 
 /* ECC Domain Selection */
 #define PDB_ECC_ECDSEL(curve)	SHIFT_U32((curve) & 0x3F, 7)

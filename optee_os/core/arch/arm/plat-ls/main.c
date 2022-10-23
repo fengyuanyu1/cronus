@@ -39,10 +39,12 @@
 #endif
 #include <io.h>
 #include <kernel/boot.h>
+#include <kernel/dt.h>
 #include <kernel/misc.h>
 #include <kernel/panic.h>
 #include <kernel/thread.h>
 #include <kernel/tz_ssvce_def.h>
+#include <libfdt.h>
 #include <mm/core_memprot.h>
 #include <sm/optee_smc.h>
 #include <kernel/tee_common_otp.h>
@@ -57,7 +59,16 @@ static struct ns16550_data console_data;
 
 register_phys_mem_pgdir(MEM_AREA_IO_NSEC, CONSOLE_UART_BASE,
 			CORE_MMU_PGDIR_SIZE);
+#if !defined(PLATFORM_FLAVOR_lx2160aqds) && !defined(PLATFORM_FLAVOR_lx2160ardb)
 register_phys_mem_pgdir(MEM_AREA_IO_SEC, GIC_BASE, CORE_MMU_PGDIR_SIZE);
+#endif
+
+#if defined(PLATFORM_FLAVOR_lx2160ardb) || defined(PLATFORM_FLAVOR_lx2160aqds)
+register_ddr(CFG_DRAM0_BASE, (CFG_TZDRAM_START - CFG_DRAM0_BASE));
+#ifdef CFG_DRAM1_BASE
+register_ddr(CFG_DRAM1_BASE, CFG_DRAM1_SIZE);
+#endif
+#endif
 
 #ifdef CFG_ARM32_core
 void plat_primary_init_early(void)
@@ -102,29 +113,92 @@ void plat_primary_init_early(void)
 void console_init(void)
 {
 #ifdef CFG_PL011
-	pl011_init(&console_data, CONSOLE_UART_BASE, CONSOLE_UART_CLK_IN_HZ,
-		   CONSOLE_BAUDRATE);
+	/*
+	 * Everything for uart driver initialization is done in bootloader.
+	 * So not reinitializing console.
+	 */
+	pl011_init(&console_data, CONSOLE_UART_BASE, 0, 0);
 #else
 	ns16550_init(&console_data, CONSOLE_UART_BASE, IO_WIDTH_U8, 0);
 #endif
 	register_serial_console(&console_data.chip);
 }
 
+#if defined(PLATFORM_FLAVOR_lx2160aqds) || defined(PLATFORM_FLAVOR_lx2160ardb)
+static TEE_Result get_gic_base_addr_from_dt(paddr_t *gic_addr)
+{
+	paddr_t paddr = 0;
+	ssize_t size = 0;
+
+	void *fdt = get_embedded_dt();
+	int gic_offset = 0;
+
+	gic_offset = fdt_path_offset(fdt, "/soc/interrupt-controller@6000000");
+
+	if (gic_offset < 0)
+		gic_offset = fdt_path_offset(fdt,
+					     "/interrupt-controller@6000000");
+
+	if (gic_offset > 0) {
+		paddr = _fdt_reg_base_address(fdt, gic_offset);
+		if (paddr == DT_INFO_INVALID_REG) {
+			EMSG("GIC: Unable to get base addr from DT");
+			return TEE_ERROR_ITEM_NOT_FOUND;
+		}
+
+		size = _fdt_reg_size(fdt, gic_offset);
+		if (size < 0) {
+			EMSG("GIC: Unable to get size of base addr from DT");
+			return TEE_ERROR_ITEM_NOT_FOUND;
+		}
+	} else {
+		EMSG("Unable to get gic offset node");
+		return TEE_ERROR_ITEM_NOT_FOUND;
+	}
+
+	/* make entry in page table */
+	if (!core_mmu_add_mapping(MEM_AREA_IO_SEC, paddr, size)) {
+		EMSG("GIC controller base MMU PA mapping failure");
+		return TEE_ERROR_GENERIC;
+	}
+
+	*gic_addr = paddr;
+	return TEE_SUCCESS;
+}
+#endif
+
 void main_init_gic(void)
 {
-	vaddr_t gicc_base;
-	vaddr_t gicd_base;
+	vaddr_t gicc_base = 0;
+	vaddr_t gicd_base = 0;
 
-	gicc_base = (vaddr_t)phys_to_virt(GIC_BASE + GICC_OFFSET,
-					  MEM_AREA_IO_SEC);
-	gicd_base = (vaddr_t)phys_to_virt(GIC_BASE + GICD_OFFSET,
-					  MEM_AREA_IO_SEC);
+	paddr_t gic_base = 0;
+	uint32_t gicc_offset = 0;
+	uint32_t gicd_offset = 0;
 
+#if defined(PLATFORM_FLAVOR_lx2160aqds) || defined(PLATFORM_FLAVOR_lx2160ardb)
+	if (get_gic_base_addr_from_dt(&gic_base))
+		EMSG("Failed to get GIC base addr from DT");
+#else
+	gic_base = GIC_BASE;
+	gicc_offset = GICC_OFFSET;
+	gicd_offset = GICD_OFFSET;
+#endif
+
+	gicc_base = (vaddr_t)phys_to_virt(gic_base + gicc_offset,
+					  MEM_AREA_IO_SEC);
+	gicd_base = (vaddr_t)phys_to_virt(gic_base + gicd_offset,
+					  MEM_AREA_IO_SEC);
 	if (!gicc_base || !gicd_base)
 		panic();
 
+#if defined(CFG_WITH_ARM_TRUSTED_FW)
+	/* On ARMv8, GIC configuration is initialized in ARM-TF */
+	gic_init_base_addr(&gic_data, gicc_base, gicd_base);
+#else
 	/* Initialize GIC */
 	gic_init(&gic_data, gicc_base, gicd_base);
+#endif
 	itr_init(&gic_data.chip);
 }
 
@@ -132,43 +206,3 @@ void main_secondary_init_gic(void)
 {
 	gic_cpu_init(&gic_data);
 }
-
-#ifdef CFG_HW_UNQ_KEY_REQUEST
-
-#include <types_ext.h>
-int get_hw_unique_key(uint64_t smc_func_id, uint64_t in_key, uint64_t size);
-
-/*
- * Issued when requesting to Secure Storage Key for secure storage.
- *
- * SiP Service Calls
- *
- * Register usage:
- * r0/x0	SMC Function ID, OPTEE_SMC_FUNCID_SIP_LS_HW_UNQ_KEY
- */
-#define OPTEE_SMC_FUNCID_SIP_LS_HW_UNQ_KEY			0xFF14
-#define OPTEE_SMC_FAST_CALL_SIP_LS_HW_UNQ_KEY \
-	OPTEE_SMC_CALL_VAL(OPTEE_SMC_32, OPTEE_SMC_FAST_CALL, \
-			   OPTEE_SMC_OWNER_SIP, \
-			   OPTEE_SMC_FUNCID_SIP_LS_HW_UNQ_KEY)
-
-TEE_Result tee_otp_get_hw_unique_key(struct tee_hw_unique_key *hwkey)
-{
-	TEE_Result res;
-	int ret = 0;
-	uint8_t hw_unq_key[sizeof(hwkey->data)] __aligned(64);
-
-	ret = get_hw_unique_key(OPTEE_SMC_FAST_CALL_SIP_LS_HW_UNQ_KEY,
-			virt_to_phys(hw_unq_key), sizeof(hwkey->data));
-
-	if (ret < 0) {
-		EMSG("\nH/W Unique key is not fetched from the platform.");
-		res = TEE_ERROR_SECURITY;
-	} else {
-		memcpy(&hwkey->data[0], hw_unq_key, sizeof(hwkey->data));
-		res = TEE_SUCCESS;
-	}
-
-	return res;
-}
-#endif

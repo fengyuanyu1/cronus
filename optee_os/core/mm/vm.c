@@ -162,13 +162,25 @@ static TEE_Result alloc_pgt(struct user_mode_ctx *uctx)
 	return TEE_SUCCESS;
 }
 
-static void maybe_free_pgt(struct user_mode_ctx *uctx, struct vm_region *r)
+static void rem_um_region(struct user_mode_ctx *uctx, struct vm_region *r)
 {
-	struct thread_specific_data *tsd = NULL;
+	struct thread_specific_data *tsd = thread_get_tsd();
 	struct pgt_cache *pgt_cache = NULL;
 	vaddr_t begin = ROUNDDOWN(r->va, CORE_MMU_PGDIR_SIZE);
 	vaddr_t last = ROUNDUP(r->va + r->size, CORE_MMU_PGDIR_SIZE);
 	struct vm_region *r2 = NULL;
+
+	if (uctx->ts_ctx == tsd->ctx)
+		pgt_cache = &tsd->pgt_cache;
+
+	if (mobj_is_paged(r->mobj)) {
+		tee_pager_rem_um_region(uctx, r->va, r->size);
+	} else {
+		pgt_clear_ctx_range(pgt_cache, uctx->ts_ctx, r->va,
+				    r->va + r->size);
+		tlbi_mva_range_asid(r->va, r->size, SMALL_PAGE_SIZE,
+				    uctx->vm_info.asid);
+	}
 
 	r2 = TAILQ_NEXT(r, link);
 	if (r2)
@@ -183,12 +195,15 @@ static void maybe_free_pgt(struct user_mode_ctx *uctx, struct vm_region *r)
 	if (begin >= last)
 		return;
 
-	tsd = thread_get_tsd();
-	if (uctx->ts_ctx == tsd->ctx)
-		pgt_cache = &tsd->pgt_cache;
-
 	pgt_flush_ctx_range(pgt_cache, uctx->ts_ctx, r->va, r->va + r->size);
 }
+
+/*
+  printk("dumping addr %lx (%lx)\n", va_range_base, va_range_size);
+  TAILQ_FOREACH(r, &vmi->regions, link) {
+  	printk("%lx-%lx (%lx)\n", r->va, r->va + r->size, r->size);
+  }
+*/
 
 static TEE_Result umap_add_region(struct vm_info *vmi, struct vm_region *reg,
 				  size_t pad_begin, size_t pad_end,
@@ -539,9 +554,7 @@ TEE_Result vm_remap(struct user_mode_ctx *uctx, vaddr_t *new_va, vaddr_t old_va,
 		if (r->va + r->size > old_va + len)
 			break;
 		r_next = TAILQ_NEXT(r, link);
-		if (fobj)
-			tee_pager_rem_um_region(uctx, r->va, r->size);
-		maybe_free_pgt(uctx, r);
+		rem_um_region(uctx, r);
 		TAILQ_REMOVE(&uctx->vm_info.regions, r, link);
 		TAILQ_INSERT_TAIL(&regs, r, link);
 	}
@@ -774,20 +787,12 @@ TEE_Result vm_unmap(struct user_mode_ctx *uctx, vaddr_t va, size_t len)
 	while (true) {
 		r_next = TAILQ_NEXT(r, link);
 		unmap_end_va = r->va + r->size;
-		if (mobj_is_paged(r->mobj))
-			tee_pager_rem_um_region(uctx, r->va, r->size);
-		maybe_free_pgt(uctx, r);
+		rem_um_region(uctx, r);
 		umap_remove_region(&uctx->vm_info, r);
 		if (!r_next || unmap_end_va == end_va)
 			break;
 		r = r_next;
 	}
-
-	/*
-	 * Synchronize change to translation tables. Even though the pager
-	 * case unmaps immediately we may still free a translation table.
-	 */
-	vm_set_ctx(uctx->ts_ctx);
 
 	return TEE_SUCCESS;
 }
@@ -843,9 +848,7 @@ void vm_clean_param(struct user_mode_ctx *uctx)
 
 	TAILQ_FOREACH_SAFE(r, &uctx->vm_info.regions, link, next_r) {
 		if (r->flags & VM_FLAG_EPHEMERAL) {
-			if (mobj_is_paged(r->mobj))
-				tee_pager_rem_um_region(uctx, r->va, r->size);
-			maybe_free_pgt(uctx, r);
+			rem_um_region(uctx, r);
 			umap_remove_region(&uctx->vm_info, r);
 		}
 	}
@@ -1055,9 +1058,7 @@ void vm_rem_rwmem(struct user_mode_ctx *uctx, struct mobj *mobj, vaddr_t va)
 
 	TAILQ_FOREACH(r, &uctx->vm_info.regions, link) {
 		if (r->mobj == mobj && r->va == va) {
-			if (mobj_is_paged(r->mobj))
-				tee_pager_rem_um_region(uctx, r->va, r->size);
-			maybe_free_pgt(uctx, r);
+			rem_um_region(uctx, r);
 			umap_remove_region(&uctx->vm_info, r);
 			return;
 		}
@@ -1185,9 +1186,8 @@ TEE_Result vm_va2pa(const struct user_mode_ctx *uctx, void *ua, paddr_t *pa)
 	return tee_mmu_user_va2pa_attr(uctx, ua, pa, NULL);
 }
 
-TEE_Result vm_pa2va(const struct user_mode_ctx *uctx, paddr_t pa, void **va)
+void *vm_pa2va(const struct user_mode_ctx *uctx, paddr_t pa)
 {
-	TEE_Result res = TEE_SUCCESS;
 	paddr_t p = 0;
 	struct vm_region *region = NULL;
 
@@ -1212,12 +1212,12 @@ TEE_Result vm_pa2va(const struct user_mode_ctx *uctx, paddr_t pa, void **va)
 
 				if (size > (region->size - ofs))
 					size = region->size - ofs;
-			} else
+			} else {
 				size = region->size;
+			}
 
-			res = mobj_get_pa(region->mobj, ofs, granule, &p);
-			if (res != TEE_SUCCESS)
-				return res;
+			if (mobj_get_pa(region->mobj, ofs, granule, &p))
+				continue;
 
 			if (core_is_buffer_inside(pa, 1, p, size)) {
 				/* Remove region offset (mobj phys offset) */
@@ -1225,13 +1225,12 @@ TEE_Result vm_pa2va(const struct user_mode_ctx *uctx, paddr_t pa, void **va)
 				/* Get offset-in-granule */
 				p = pa - p;
 
-				*va = (void *)(region->va + ofs + (vaddr_t)p);
-				return TEE_SUCCESS;
+				return (void *)(region->va + ofs + (vaddr_t)p);
 			}
 		}
 	}
 
-	return TEE_ERROR_ACCESS_DENIED;
+	return NULL;
 }
 
 TEE_Result vm_check_access_rights(const struct user_mode_ctx *uctx,
@@ -1308,3 +1307,27 @@ void vm_set_ctx(struct ts_ctx *ctx)
 	tsd->ctx = ctx;
 }
 
+TEE_Result map_virt_phys(vaddr_t *virt_addr, vaddr_t phys_addr, size_t size, int prot) {
+	TEE_Result ret = TEE_ERROR_BAD_PARAMETERS;
+	struct mobj_phys *obj;
+	struct ts_session *sess = ts_get_current_session();
+	struct user_mode_ctx *uctx = to_user_mode_ctx(sess->ctx);
+	obj = mobj_phys_alloc_raw(phys_addr, virt_addr, size);
+
+	if (!obj) {
+		printk("error in allocating phys_mobj\n");
+		goto fin;
+	}
+
+	ret = vm_map(uctx, virt_addr, size, TEE_MATTR_URW, VM_FLAG_PERMANENT, obj, 0);
+	if (ret) {
+		printk("error in mapping with %lx\n", ret);
+		goto fin;
+	}
+
+fin:
+#ifdef DEBUG_CRONUS_MAPPING
+	printk("map %lx (%lx) to %lx\n", *virt_addr, size, phys_addr);
+#endif
+	return ret;
+}

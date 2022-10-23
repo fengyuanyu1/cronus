@@ -8,6 +8,7 @@
 #include <confine_array_index.h>
 #include <pkcs11_ta.h>
 #include <printk.h>
+#include <pta_system.h>
 #include <string.h>
 #include <string_ext.h>
 #include <sys/queue.h>
@@ -30,16 +31,21 @@
 #define TOKEN_COUNT		CFG_PKCS11_TA_TOKEN_COUNT
 #endif
 
+/* RNG chunk size used to split RNG generation to smaller sizes */
+#define RNG_CHUNK_SIZE		512U
+
 /*
  * Structure tracking client applications
  *
  * @link - chained list of registered client applications
  * @sessions - list of the PKCS11 sessions opened by the client application
+ * @object_handle_db - Database for object handles in name space of client
  */
 struct pkcs11_client {
 	TAILQ_ENTRY(pkcs11_client) link;
 	struct session_list session_list;
 	struct handle_db session_handle_db;
+	struct handle_db object_handle_db;
 };
 
 /* Static allocation of tokens runtime instances (reset to 0 at load) */
@@ -64,6 +70,16 @@ unsigned int get_token_id(struct ck_token *token)
 
 	assert(id >= 0 && id < TOKEN_COUNT);
 	return id;
+}
+
+struct handle_db *get_object_handle_db(struct pkcs11_session *session)
+{
+	return &session->client->object_handle_db;
+}
+
+struct session_list *get_session_list(struct pkcs11_session *session)
+{
+	return &session->client->session_list;
 }
 
 struct pkcs11_client *tee_session2client(void *tee_session)
@@ -94,6 +110,7 @@ struct pkcs11_client *register_client(void)
 	TAILQ_INSERT_HEAD(&pkcs11_client_list, client, link);
 	TAILQ_INIT(&client->session_list);
 	handle_db_init(&client->session_handle_db);
+	handle_db_init(&client->object_handle_db);
 
 	return client;
 }
@@ -112,6 +129,7 @@ void unregister_client(struct pkcs11_client *client)
 		close_ck_session(session);
 
 	TAILQ_REMOVE(&pkcs11_client_list, client, link);
+	handle_db_destroy(&client->object_handle_db);
 	handle_db_destroy(&client->session_handle_db);
 	TEE_Free(client);
 }
@@ -501,8 +519,8 @@ enum pkcs11_rc entry_ck_token_mecha_info(uint32_t ptypes, TEE_Param *params)
 
 	info.flags = mechanism_supported_flags(type);
 
-	mechanism_supported_key_sizes(type, &info.min_key_size,
-				      &info.max_key_size);
+	pkcs11_mechanism_supported_key_sizes(type, &info.min_key_size,
+					     &info.max_key_size);
 
 	TEE_MemMove(out->memref.buffer, &info, sizeof(info));
 
@@ -635,7 +653,6 @@ enum pkcs11_rc entry_ck_open_session(struct pkcs11_client *client,
 	session->client = client;
 
 	LIST_INIT(&session->object_list);
-	handle_db_init(&session->object_handle_db);
 
 	set_session_state(client, session, readonly);
 
@@ -656,17 +673,15 @@ enum pkcs11_rc entry_ck_open_session(struct pkcs11_client *client,
 static void close_ck_session(struct pkcs11_session *session)
 {
 	release_active_processing(session);
+	release_session_find_obj_context(session);
 
-	/* No need to put object handles, the whole database is destroyed */
+	/* Release all session objects */
 	while (!LIST_EMPTY(&session->object_list))
 		destroy_object(session,
 			       LIST_FIRST(&session->object_list), true);
 
-	release_session_find_obj_context(session);
-
 	TAILQ_REMOVE(&session->client->session_list, session, link);
 	handle_put(&session->client->session_handle_db, session->handle);
-	handle_db_destroy(&session->object_handle_db);
 
 	session->token->session_count--;
 	if (pkcs11_session_is_read_write(session))
@@ -846,7 +861,7 @@ enum pkcs11_rc entry_ck_token_initialize(uint32_t ptypes, TEE_Param *params)
 #if defined(CFG_PKCS11_TA_AUTH_TEE_IDENTITY)
 	/* Check TEE Identity based authentication if enabled */
 	if (token->db_main->flags & PKCS11_CKFT_PROTECTED_AUTHENTICATION_PATH) {
-		rc = verify_identity_auth(ck_token, PKCS11_CKU_SO);
+		rc = verify_identity_auth(token, PKCS11_CKU_SO);
 		if (rc)
 			return rc;
 	}
@@ -1286,6 +1301,7 @@ static void session_logout(struct pkcs11_session *session)
 
 	TAILQ_FOREACH(sess, &client->session_list, link) {
 		struct pkcs11_object *obj = NULL;
+		struct pkcs11_object *tobj = NULL;
 		uint32_t handle = 0;
 
 		if (sess->token != session->token)
@@ -1294,7 +1310,7 @@ static void session_logout(struct pkcs11_session *session)
 		release_active_processing(session);
 
 		/* Destroy private session objects */
-		LIST_FOREACH(obj, &sess->object_list, link) {
+		LIST_FOREACH_SAFE(obj, &sess->object_list, link, tobj) {
 			if (object_is_private(obj->attributes))
 				destroy_object(sess, obj, true);
 		}
@@ -1307,7 +1323,7 @@ static void session_logout(struct pkcs11_session *session)
 			handle = pkcs11_object2handle(obj, session);
 
 			if (handle && object_is_private(obj->attributes))
-				handle_put(&sess->object_handle_db, handle);
+				handle_put(get_object_handle_db(sess), handle);
 		}
 
 		release_session_find_obj_context(session);
@@ -1460,6 +1476,139 @@ enum pkcs11_rc entry_ck_logout(struct pkcs11_client *client,
 	session_logout(session);
 
 	IMSG("PKCS11 session %"PRIu32": logout", session->handle);
+
+	return PKCS11_CKR_OK;
+}
+
+static TEE_Result seed_rng_pool(void *seed, size_t length)
+{
+	static const TEE_UUID system_uuid = PTA_SYSTEM_UUID;
+	uint32_t param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_INPUT,
+					       TEE_PARAM_TYPE_NONE,
+					       TEE_PARAM_TYPE_NONE,
+					       TEE_PARAM_TYPE_NONE);
+	TEE_Param params[TEE_NUM_PARAMS] = { };
+	TEE_TASessionHandle sess = TEE_HANDLE_NULL;
+	TEE_Result res = TEE_ERROR_GENERIC;
+	uint32_t ret_orig = 0;
+
+	params[0].memref.buffer = seed;
+	params[0].memref.size = (uint32_t)length;
+
+	res = TEE_OpenTASession(&system_uuid, TEE_TIMEOUT_INFINITE, 0, NULL,
+				&sess, &ret_orig);
+	if (res != TEE_SUCCESS) {
+		EMSG("Can't open session to system PTA");
+		return res;
+	}
+
+	res = TEE_InvokeTACommand(sess, TEE_TIMEOUT_INFINITE,
+				  PTA_SYSTEM_ADD_RNG_ENTROPY,
+				  param_types, params, &ret_orig);
+	if (res != TEE_SUCCESS)
+		EMSG("Can't invoke system PTA");
+
+	TEE_CloseTASession(sess);
+	return res;
+}
+
+enum pkcs11_rc entry_ck_seed_random(struct pkcs11_client *client,
+				    uint32_t ptypes, TEE_Param *params)
+{
+	const uint32_t exp_pt = TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_INOUT,
+						TEE_PARAM_TYPE_MEMREF_INPUT,
+						TEE_PARAM_TYPE_NONE,
+						TEE_PARAM_TYPE_NONE);
+	TEE_Param *ctrl = params;
+	TEE_Param *in = params + 1;
+	enum pkcs11_rc rc = PKCS11_CKR_OK;
+	struct serialargs ctrlargs = { };
+	struct pkcs11_session *session = NULL;
+	TEE_Result res = TEE_SUCCESS;
+
+	if (!client || ptypes != exp_pt)
+		return PKCS11_CKR_ARGUMENTS_BAD;
+
+	serialargs_init(&ctrlargs, ctrl->memref.buffer, ctrl->memref.size);
+
+	rc = serialargs_get_session_from_handle(&ctrlargs, client, &session);
+	if (rc)
+		return rc;
+
+	if (serialargs_remaining_bytes(&ctrlargs))
+		return PKCS11_CKR_ARGUMENTS_BAD;
+
+	if (in->memref.size && !in->memref.buffer)
+		return PKCS11_CKR_ARGUMENTS_BAD;
+
+	if (!in->memref.size)
+		return PKCS11_CKR_OK;
+
+	res = seed_rng_pool(in->memref.buffer, in->memref.size);
+	if (res != TEE_SUCCESS)
+		return PKCS11_CKR_FUNCTION_FAILED;
+
+	DMSG("PKCS11 session %"PRIu32": seed random", session->handle);
+
+	return PKCS11_CKR_OK;
+}
+
+enum pkcs11_rc entry_ck_generate_random(struct pkcs11_client *client,
+					uint32_t ptypes, TEE_Param *params)
+{
+	const uint32_t exp_pt = TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_INOUT,
+						TEE_PARAM_TYPE_NONE,
+						TEE_PARAM_TYPE_MEMREF_OUTPUT,
+						TEE_PARAM_TYPE_NONE);
+	TEE_Param *ctrl = params;
+	TEE_Param *out = params + 2;
+	enum pkcs11_rc rc = PKCS11_CKR_OK;
+	struct serialargs ctrlargs = { };
+	struct pkcs11_session *session = NULL;
+	void *buffer = NULL;
+	size_t buffer_size = 0;
+	uint8_t *data = NULL;
+	size_t left = 0;
+
+	if (!client || ptypes != exp_pt)
+		return PKCS11_CKR_ARGUMENTS_BAD;
+
+	serialargs_init(&ctrlargs, ctrl->memref.buffer, ctrl->memref.size);
+
+	rc = serialargs_get_session_from_handle(&ctrlargs, client, &session);
+	if (rc)
+		return rc;
+
+	if (serialargs_remaining_bytes(&ctrlargs))
+		return PKCS11_CKR_ARGUMENTS_BAD;
+
+	if (out->memref.size && !out->memref.buffer)
+		return PKCS11_CKR_ARGUMENTS_BAD;
+
+	if (!out->memref.size)
+		return PKCS11_CKR_OK;
+
+	buffer_size = MIN(out->memref.size, RNG_CHUNK_SIZE);
+	buffer = TEE_Malloc(buffer_size, TEE_MALLOC_FILL_ZERO);
+	if (!buffer)
+		return PKCS11_CKR_DEVICE_MEMORY;
+
+	data = out->memref.buffer;
+	left = out->memref.size;
+
+	while (left) {
+		size_t count = MIN(left, buffer_size);
+
+		TEE_GenerateRandom(buffer, count);
+		TEE_MemMove(data, buffer, count);
+
+		data += count;
+		left -= count;
+	}
+
+	DMSG("PKCS11 session %"PRIu32": generate random", session->handle);
+
+	TEE_Free(buffer);
 
 	return PKCS11_CKR_OK;
 }

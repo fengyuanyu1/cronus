@@ -1,14 +1,4 @@
-ifeq ($(CFG_WITH_USER_TA),y)
-srcs-y += user_ta.c
-srcs-y += ldelf_loader.c
-srcs-$(CFG_REE_FS_TA) += ree_fs_ta.c
-srcs-$(CFG_EARLY_TA) += early_ta.c
-srcs-$(CFG_SECSTOR_TA) += secstor_ta.c
-endif
-
-srcs-$(CFG_SECURE_PARTITION) += secure_partition.c
-srcs-$(CFG_EMBEDDED_TS) += embedded_ts.c
-srcs-y += pseudo_ta.c
+srcs-$(CFG_WITH_USER_TA) += ldelf_loader.c
 srcs-y += tee_time.c
 srcs-y += rpc_io_i2c.c
 srcs-y += otp_stubs.c
@@ -50,10 +40,9 @@ endif
 srcs-y += trace_ext.c
 srcs-$(CFG_ARM32_core) += misc_a32.S
 srcs-$(CFG_ARM64_core) += misc_a64.S
-srcs-y += mutex.c
-srcs-$(CFG_LOCKDEP) += mutex_lockdep.c
-srcs-y += wait_queue.c
 srcs-$(CFG_WITH_STMM_SP) += stmm_sp.c
+srcs-$(CFG_SECURE_PARTITION) += secure_partition.c
+srcs-$(CFG_SECURE_PARTITION) += spmc_sp_handler.c
 
 srcs-y += boot.c
 srcs-$(CFG_ARM32_core) += entry_a32.S
@@ -70,6 +59,15 @@ srcs-y += link_dummies_paged.c
 srcs-y += link_dummies_init.c
 
 asm-defines-y += asm-defines.c
+# Reflect the following dependencies:
+# asm-defines.c includes <kernel/thread.h>
+#   <kernel/thread.h> includes <asm.h>
+#     <asm.h> includes <generated/arm32_sysreg.h>
+#                  and <generated/arm32_gicv3_sysreg.h> (optional)
+asm-defines-asm-defines.c-deps += $(out-dir)/core/include/generated/arm32_sysreg.h
+ifeq ($(CFG_ARM_GICV3),y)
+asm-defines-asm-defines.c-deps += $(out-dir)/core/include/generated/arm32_gicv3_sysreg.h
+endif
 
 ifeq ($(CFG_SYSCALL_FTRACE),y)
 # We would not like to profile thread.c file as it provide common APIs

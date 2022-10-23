@@ -2,6 +2,7 @@
 /*
  * Copyright (c) 2018-2019, Linaro Limited
  * Copyright (c) 2020, Arm Limited.
+ * Copyright (c) 2020, Open Mobile Platform LLC
  */
 
 #include <assert.h>
@@ -25,6 +26,8 @@
 #include <string.h>
 #include <tee_api_defines_extensions.h>
 #include <tee_api_defines.h>
+#include <tee/tee_supp_plugin_rpc.h>
+#include <tee/uuid.h>
 #include <util.h>
 
 static unsigned int system_pnum;
@@ -245,7 +248,7 @@ static TEE_Result system_dlsym(struct user_mode_ctx *uctx, uint32_t param_types,
 		return TEE_ERROR_BAD_PARAMETERS;
 
 	uuid = params[0].memref.buffer;
-	if (uuid && params[0].memref.size != sizeof(*uuid))
+	if (!uuid || params[0].memref.size != sizeof(*uuid))
 		return TEE_ERROR_BAD_PARAMETERS;
 
 	sym = params[1].memref.buffer;
@@ -279,6 +282,30 @@ static TEE_Result system_get_tpm_event_log(uint32_t param_types,
 	size = params[0].memref.size;
 	res = tpm_get_event_log(params[0].memref.buffer, &size);
 	params[0].memref.size = size;
+
+	return res;
+}
+
+static TEE_Result system_supp_plugin_invoke(uint32_t param_types,
+					    TEE_Param params[TEE_NUM_PARAMS])
+{
+	uint32_t exp_pt = TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_INPUT,
+					  TEE_PARAM_TYPE_VALUE_INPUT,
+					  TEE_PARAM_TYPE_MEMREF_INOUT,
+					  TEE_PARAM_TYPE_VALUE_OUTPUT);
+	TEE_Result res = TEE_ERROR_GENERIC;
+	size_t outlen = 0;
+
+	if (exp_pt != param_types)
+		return TEE_ERROR_BAD_PARAMETERS;
+
+	res = tee_invoke_supp_plugin_rpc(params[0].memref.buffer, /* uuid */
+					 params[1].value.a, /* cmd */
+					 params[1].value.b, /* sub_cmd */
+					 params[2].memref.buffer, /* data */
+					 params[2].memref.size, /* in len */
+					 &outlen);
+	params[3].value.a = (uint32_t)outlen;
 
 	return res;
 }
@@ -321,6 +348,8 @@ static TEE_Result invoke_command(void *sess_ctx __unused, uint32_t cmd_id,
 		return system_dlsym(uctx, param_types, params);
 	case PTA_SYSTEM_GET_TPM_EVENT_LOG:
 		return system_get_tpm_event_log(param_types, params);
+	case PTA_SYSTEM_SUPP_PLUGIN_INVOKE:
+		return system_supp_plugin_invoke(param_types, params);
 	default:
 		break;
 	}

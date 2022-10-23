@@ -70,6 +70,7 @@ static struct memaccess_area secure_only[] __nex_data = {
 	MEMACCESS_AREA(TZSRAM_BASE, TZSRAM_SIZE),
 #endif
 	MEMACCESS_AREA(TZDRAM_BASE, TZDRAM_SIZE),
+	MEMACCESS_AREA(((long)1 << 32), ((long)1 << 31)),
 };
 
 static struct memaccess_area nsec_shared[] __nex_data = {
@@ -90,19 +91,26 @@ register_sdp_mem(TEE_SDP_TEST_MEM_BASE, TEE_SDP_TEST_MEM_SIZE);
 #ifdef CFG_CORE_RWDATA_NOEXEC
 register_phys_mem_ul(MEM_AREA_TEE_RAM_RO, TEE_RAM_START,
 		     VCORE_UNPG_RX_PA - TEE_RAM_START);
-register_phys_mem_ul(MEM_AREA_TEE_RAM_RX, VCORE_UNPG_RX_PA, VCORE_UNPG_RX_SZ);
-register_phys_mem_ul(MEM_AREA_TEE_RAM_RO, VCORE_UNPG_RO_PA, VCORE_UNPG_RO_SZ);
+register_phys_mem_ul(MEM_AREA_TEE_RAM_RX, VCORE_UNPG_RX_PA,
+		     VCORE_UNPG_RX_SZ_UNSAFE);
+register_phys_mem_ul(MEM_AREA_TEE_RAM_RO, VCORE_UNPG_RO_PA,
+		     VCORE_UNPG_RO_SZ_UNSAFE);
 
 #ifdef CFG_VIRTUALIZATION
-register_phys_mem_ul(MEM_AREA_TEE_RAM_RO, VCORE_UNPG_RW_PA, VCORE_UNPG_RW_SZ);
-register_phys_mem_ul(MEM_AREA_NEX_RAM_RW, VCORE_NEX_RW_PA, VCORE_NEX_RW_SZ);
+register_phys_mem_ul(MEM_AREA_TEE_RAM_RO, VCORE_UNPG_RW_PA,
+		     VCORE_UNPG_RW_SZ_UNSAFE);
+register_phys_mem_ul(MEM_AREA_NEX_RAM_RW, VCORE_NEX_RW_PA,
+		     VCORE_NEX_RW_SZ_UNSAFE);
 #else
-register_phys_mem_ul(MEM_AREA_TEE_RAM_RW, VCORE_UNPG_RW_PA, VCORE_UNPG_RW_SZ);
+register_phys_mem_ul(MEM_AREA_TEE_RAM_RW, VCORE_UNPG_RW_PA,
+		     VCORE_UNPG_RW_SZ_UNSAFE);
 #endif
 
 #ifdef CFG_WITH_PAGER
-register_phys_mem_ul(MEM_AREA_TEE_RAM_RX, VCORE_INIT_RX_PA, VCORE_INIT_RX_SZ);
-register_phys_mem_ul(MEM_AREA_TEE_RAM_RO, VCORE_INIT_RO_PA, VCORE_INIT_RO_SZ);
+register_phys_mem_ul(MEM_AREA_TEE_RAM_RX, VCORE_INIT_RX_PA,
+		     VCORE_INIT_RX_SZ_UNSAFE);
+register_phys_mem_ul(MEM_AREA_TEE_RAM_RO, VCORE_INIT_RO_PA,
+		     VCORE_INIT_RO_SZ_UNSAFE);
 #endif /*CFG_WITH_PAGER*/
 #else /*!CFG_CORE_RWDATA_NOEXEC*/
 register_phys_mem(MEM_AREA_TEE_RAM, TEE_RAM_START, TEE_RAM_PH_SIZE);
@@ -119,7 +127,8 @@ register_phys_mem_ul(MEM_AREA_TEE_ASAN, ASAN_MAP_PA, ASAN_MAP_SZ);
 
 #ifndef CFG_VIRTUALIZATION
 /* Every guest will have own TA RAM if virtualization support is enabled */
-register_phys_mem(MEM_AREA_TA_RAM, TA_RAM_START, TA_RAM_SIZE);
+// register_phys_mem(MEM_AREA_TA_RAM, TA_RAM_START, TA_RAM_SIZE);
+register_phys_mem(MEM_AREA_SEC_TA_SHM, TA_RAM_START, TA_RAM_SIZE);
 #endif
 #ifdef CFG_CORE_RESERVED_SHM
 register_phys_mem(MEM_AREA_NSEC_SHM, TEE_SHMEM_START, TEE_SHMEM_SIZE);
@@ -297,7 +306,7 @@ static void carve_out_phys_mem(struct core_mmu_phys_mem **mem, size_t *nelems,
 		/* Remove this entry */
 		(*nelems)--;
 		memmove(m + n, m + n + 1, sizeof(*m) * (*nelems - n));
-		m = realloc(m, sizeof(*m) * *nelems);
+		m = nex_realloc(m, sizeof(*m) * *nelems);
 		if (!m)
 			panic();
 		*mem = m;
@@ -308,7 +317,7 @@ static void carve_out_phys_mem(struct core_mmu_phys_mem **mem, size_t *nelems,
 		m[n].size -= size;
 	} else {
 		/* Need to split the memory entry */
-		m = realloc(m, sizeof(*m) * (*nelems + 1));
+		m = nex_realloc(m, sizeof(*m) * (*nelems + 1));
 		if (!m)
 			panic();
 		*mem = m;
@@ -653,6 +662,8 @@ uint32_t core_mmu_type_to_attr(enum teecore_memtypes t)
 	case MEM_AREA_RES_VASPACE:
 	case MEM_AREA_SHM_VASPACE:
 		return 0;
+	case MEM_AREA_SEC_TA_SHM:
+		return attr | TEE_MATTR_SECURE | TEE_MATTR_PRW | cached;
 	case MEM_AREA_PAGER_VASPACE:
 		return TEE_MATTR_SECURE;
 	default:
@@ -1131,6 +1142,7 @@ static void check_mem_map(struct tee_mmap_region *map)
 				panic("TEE_RAM can't fit in secure_only");
 			break;
 		case MEM_AREA_TA_RAM:
+		case MEM_AREA_SEC_TA_SHM:
 			if (!pbuf_is_inside(secure_only, m->pa, m->size))
 				panic("TA_RAM can't fit in secure_only");
 			break;
@@ -1352,43 +1364,30 @@ enum teecore_memtypes core_mmu_get_type_by_pa(paddr_t pa)
 	return map->type;
 }
 
-int __deprecated core_tlb_maintenance(int op, unsigned long a)
+void tlbi_mva_range(vaddr_t va, size_t len, size_t granule)
 {
-	switch (op) {
-	case TLBINV_UNIFIEDTLB:
-		tlbi_all();
-		break;
-	case TLBINV_CURRENT_ASID:
-#ifdef ARM32
-		tlbi_asid(read_contextidr());
-#endif
-#ifdef ARM64
-		tlbi_asid(read_contextidr_el1());
-#endif
-		break;
-	case TLBINV_BY_ASID:
-		tlbi_asid(a);
-		break;
-	case TLBINV_BY_MVA:
-		panic();
-	default:
-		return 1;
-	}
-	return 0;
-}
-
-void tlbi_mva_range(vaddr_t va, size_t size, size_t granule)
-{
-	size_t sz = size;
-
 	assert(granule == CORE_MMU_PGDIR_SIZE || granule == SMALL_PAGE_SIZE);
+	assert(!(va & (granule - 1)) && !(len & (granule - 1)));
 
 	dsb_ishst();
-	while (sz) {
+	while (len) {
 		tlbi_mva_allasid_nosync(va);
-		if (sz < granule)
-			break;
-		sz -= granule;
+		len -= granule;
+		va += granule;
+	}
+	dsb_ish();
+	isb();
+}
+
+void tlbi_mva_range_asid(vaddr_t va, size_t len, size_t granule, uint32_t asid)
+{
+	assert(granule == CORE_MMU_PGDIR_SIZE || granule == SMALL_PAGE_SIZE);
+	assert(!(va & (granule - 1)) && !(len & (granule - 1)));
+
+	dsb_ishst();
+	while (len) {
+		tlbi_mva_asid_nosync(va, asid);
+		len -= granule;
 		va += granule;
 	}
 	dsb_ish();
@@ -2048,8 +2047,8 @@ void asid_free(unsigned int asid)
 static bool arm_va2pa_helper(void *va, paddr_t *pa)
 {
 	uint32_t exceptions = thread_mask_exceptions(THREAD_EXCP_ALL);
-	paddr_t par;
-	paddr_t par_pa_mask;
+	paddr_t par = 0;
+	paddr_t par_pa_mask = 0;
 	bool ret = false;
 
 #ifdef ARM32
@@ -2092,14 +2091,14 @@ static vaddr_t get_linear_map_end(void)
 #if defined(CFG_TEE_CORE_DEBUG)
 static void check_pa_matches_va(void *va, paddr_t pa)
 {
-	TEE_Result res;
+	TEE_Result res = TEE_ERROR_GENERIC;
 	vaddr_t v = (vaddr_t)va;
 	paddr_t p = 0;
 	struct core_mmu_table_info ti __maybe_unused = { };
 
 	if (core_mmu_user_va_range_is_defined()) {
-		vaddr_t user_va_base;
-		size_t user_va_size;
+		vaddr_t user_va_base = 0;
+		size_t user_va_size = 0;
 
 		core_mmu_get_user_va_range(&user_va_base, &user_va_size);
 		if (v >= user_va_base &&
@@ -2112,6 +2111,8 @@ static void check_pa_matches_va(void *va, paddr_t pa)
 
 			res = vm_va2pa(to_user_mode_ctx(thread_get_tsd()->ctx),
 				       va, &p);
+			if (res == TEE_ERROR_NOT_SUPPORTED)
+				return;
 			if (res == TEE_SUCCESS && pa != p)
 				panic("bad pa");
 			if (res != TEE_SUCCESS && pa)
@@ -2173,7 +2174,7 @@ static void check_pa_matches_va(void *va __unused, paddr_t pa __unused)
 
 paddr_t virt_to_phys(void *va)
 {
-	paddr_t pa;
+	paddr_t pa = 0;
 
 	if (!arm_va2pa_helper(va, &pa))
 		pa = 0;
@@ -2184,7 +2185,7 @@ paddr_t virt_to_phys(void *va)
 #if defined(CFG_TEE_CORE_DEBUG)
 static void check_va_matches_pa(paddr_t pa, void *va)
 {
-	paddr_t p;
+	paddr_t p = 0;
 
 	if (!va)
 		return;
@@ -2203,16 +2204,10 @@ static void check_va_matches_pa(paddr_t pa __unused, void *va __unused)
 
 static void *phys_to_virt_ta_vaspace(paddr_t pa)
 {
-	TEE_Result res;
-	void *va = NULL;
-
 	if (!core_mmu_user_mapping_is_active())
 		return NULL;
 
-	res = vm_pa2va(to_user_mode_ctx(thread_get_tsd()->ctx), pa, &va);
-	if (res != TEE_SUCCESS)
-		return NULL;
-	return va;
+	return vm_pa2va(to_user_mode_ctx(thread_get_tsd()->ctx), pa);
 }
 
 #ifdef CFG_WITH_PAGER
@@ -2225,7 +2220,7 @@ static void *phys_to_virt_tee_ram(paddr_t pa)
 #else
 static void *phys_to_virt_tee_ram(paddr_t pa)
 {
-	struct tee_mmap_region *mmap;
+	struct tee_mmap_region *mmap = NULL;
 
 	mmap = find_map_by_type_and_pa(MEM_AREA_TEE_RAM, pa);
 	if (!mmap)
@@ -2243,7 +2238,7 @@ static void *phys_to_virt_tee_ram(paddr_t pa)
 
 void *phys_to_virt(paddr_t pa, enum teecore_memtypes m)
 {
-	void *va;
+	void *va = NULL;
 
 	switch (m) {
 	case MEM_AREA_TA_VASPACE:
@@ -2270,8 +2265,8 @@ void *phys_to_virt(paddr_t pa, enum teecore_memtypes m)
 
 void *phys_to_virt_io(paddr_t pa)
 {
-	struct tee_mmap_region *map;
-	void *va;
+	struct tee_mmap_region *map = NULL;
+	void *va = NULL;
 
 	map = find_map_by_type_and_pa(MEM_AREA_IO_SEC, pa);
 	if (!map)

@@ -548,6 +548,7 @@ static void init_runtime(unsigned long pageable_part __unused)
 					      __nex_heap_start);
 #else
 	malloc_add_pool(__heap1_start, __heap1_end - __heap1_start);
+	malloc_add_pool(__vheap_start, __vheap_end - __vheap_start);
 #endif
 
 	IMSG_RAW("\n");
@@ -875,8 +876,10 @@ static int add_res_mem_dt_node(struct dt_descriptor *dt, const char *name,
 			return -1;
 	}
 
-	snprintf(subnode_name, sizeof(subnode_name),
-		 "%s@0x%" PRIxPA, name, pa);
+	ret = snprintf(subnode_name, sizeof(subnode_name),
+		       "%s@0x%" PRIxPA, name, pa);
+	if (ret < 0 || ret >= (int)sizeof(subnode_name))
+		DMSG("truncated node \"%s@0x%"PRIxPA"\"", name, pa);
 	offs = fdt_add_subnode(dt->blob, offs, subnode_name);
 	if (offs >= 0) {
 		uint32_t data[FDT_MAX_NCELLS * 2];
@@ -1223,7 +1226,7 @@ static void init_primary(unsigned long pageable_part, unsigned long nsec_entry)
  * Note: this function is weak just to make it possible to exclude it from
  * the unpaged area.
  */
-void __weak paged_init_primary(unsigned long fdt)
+void __weak boot_init_primary_late(unsigned long fdt)
 {
 	init_external_dt(fdt);
 	tpm_map_log_area(get_external_dt());
@@ -1278,9 +1281,8 @@ static void init_secondary_helper(unsigned long nsec_entry)
  * Note: this function is weak just to make it possible to exclude it from
  * the unpaged area so that it lies in the init area.
  */
-void __weak boot_init_primary(unsigned long pageable_part,
-			      unsigned long nsec_entry __maybe_unused,
-			      unsigned long fdt)
+void __weak boot_init_primary_early(unsigned long pageable_part,
+				    unsigned long nsec_entry __maybe_unused)
 {
 	unsigned long e = PADDR_INVALID;
 
@@ -1289,7 +1291,6 @@ void __weak boot_init_primary(unsigned long pageable_part,
 #endif
 
 	init_primary(pageable_part, e);
-	paged_init_primary(fdt);
 }
 
 #if defined(CFG_WITH_ARM_TRUSTED_FW)

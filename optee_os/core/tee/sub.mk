@@ -17,6 +17,7 @@ CFG_CRYPTO_PBKDF2 ?= y
 
 endif
 
+srcs-y += entry_std.c
 srcs-y += tee_cryp_utl.c
 srcs-$(CFG_CRYPTO_HKDF) += tee_cryp_hkdf.c
 srcs-$(CFG_CRYPTO_CONCAT_KDF) += tee_cryp_concat_kdf.c
@@ -30,6 +31,9 @@ srcs-y += tee_svc_cryp.c
 srcs-y += tee_svc_storage.c
 srcs-$(CFG_RPMB_FS) += tee_rpmb_fs.c
 srcs-$(CFG_REE_FS) += tee_ree_fs.c
+srcs-$(CFG_REE_FS) += tee_ree_direct_fs_rpc.c
+srcs-y += tee_device_fs.c
+srcs-y += tee_posix_device_internal.c
 srcs-$(call cfg-one-enabled,CFG_REE_FS CFG_TEE_CORE_EMBED_INTERNAL_TESTS) += \
 	fs_htree.c
 srcs-$(CFG_REE_FS) += fs_dirfile.c
@@ -40,8 +44,14 @@ srcs-y += tee_pobj.c
 srcs-y += tee_time_generic.c
 srcs-$(CFG_SECSTOR_TA) += tadb.c
 srcs-$(CFG_GP_SOCKETS) += socket.c
+srcs-y += tee_ta_enc_manager.c
 
 endif #CFG_WITH_USER_TA,y
 
 srcs-y += uuid.c
-srcs-y += tee_ta_enc_manager.c
+srcs-y += tee_supp_plugin_rpc.c
+
+srcs-y += tee-port.c tee_mm.c tee_kthread.c tee_sync.c tee_time.c tee_string.c
+srcs-y += tee_pfn.c
+srcs-y += tee_wq.c
+srcs-y += tee_irq_internal.c

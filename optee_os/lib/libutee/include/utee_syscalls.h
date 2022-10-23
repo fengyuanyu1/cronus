@@ -10,6 +10,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <unistd.h>
 #include <utee_types.h>
 #include <tee_api_types.h>
 #include <trace.h>
@@ -288,4 +289,20 @@ TEE_Result _utee_cache_operation(void *va, size_t l, unsigned long op);
 
 TEE_Result _utee_gprof_send(void *buf, size_t size, uint32_t *id);
 
+TEE_Result _utee_fs_open(const char *filename, int flag, int mode, int *fd);
+
+TEE_Result _utee_fs_read(int fd, void *buf, size_t count, size_t off, ssize_t *rsize);
+
+TEE_Result _utee_fs_write(int fd, const void *buf, size_t count, size_t off, ssize_t *wsize);
+
+TEE_Result _utee_fs_close(int fd);
+
+TEE_Result _utee_dev_ioctl(int fd, unsigned long request, void *args, int *ret_val);
+
+// mm
+TEE_Result _utee_mmap(void *addr, size_t length, int prot, int flags,
+                int fd, long offset, void **mapped_addr);
+TEE_Result _utee_mremap(void *old_address, size_t old_size,
+            size_t new_size, int flags, void **new_addr);
+TEE_Result _utee_munmap(void *addr, size_t len, int *ret);
 #endif /* UTEE_SYSCALLS_H */

@@ -131,6 +131,7 @@ enum teecore_memtypes {
 	MEM_AREA_SDP_MEM,
 	MEM_AREA_DDR_OVERALL,
 	MEM_AREA_SEC_RAM_OVERALL,
+	MEM_AREA_SEC_TA_SHM,
 	MEM_AREA_MAXTYPE
 };
 
@@ -160,6 +161,7 @@ static inline const char *teecore_memtype_name(enum teecore_memtypes type)
 		[MEM_AREA_SDP_MEM] = "SDP_MEM",
 		[MEM_AREA_DDR_OVERALL] = "DDR_OVERALL",
 		[MEM_AREA_SEC_RAM_OVERALL] = "SEC_RAM_OVERALL",
+		[MEM_AREA_SEC_TA_SHM] = "MEM_AREA_SEC_TA_SHM",
 	};
 
 	COMPILE_TIME_ASSERT(ARRAY_SIZE(names) == MEM_AREA_MAXTYPE);
@@ -428,8 +430,10 @@ void core_mmu_get_user_map(struct core_mmu_user_map *map);
 
 /*
  * core_mmu_set_user_map() - Set new MMU configuration for user VA space
- * @map:	If NULL will disable user VA space, if not NULL the user
- *		VA space to activate.
+ * @map:	User context MMU configuration or NULL to set core VA space
+ *
+ * Activate user VA space mapping and set its ASID if @map is not NULL,
+ * otherwise activate core mapping and set ASID to 0.
  */
 void core_mmu_set_user_map(struct core_mmu_user_map *map);
 
@@ -618,21 +622,29 @@ TEE_Result core_mmu_remove_mapping(enum teecore_memtypes type, void *addr,
 				   size_t len);
 bool core_mmu_add_mapping(enum teecore_memtypes type, paddr_t addr, size_t len);
 
-/* various invalidate secure TLB */
-enum teecore_tlb_op {
-	TLBINV_UNIFIEDTLB,	/* invalidate unified tlb */
-	TLBINV_CURRENT_ASID,	/* invalidate unified tlb for current ASID */
-	TLBINV_BY_ASID,		/* invalidate unified tlb by ASID */
-	TLBINV_BY_MVA,		/* invalidate unified tlb by MVA */
-};
+/*
+ * tlbi_mva_range() - Invalidate TLB for virtual address range
+ * @va:		start virtual address, must be a multiple of @granule
+ * @len:	length in bytes of range, must be a multiple of @granule
+ * @granule:	granularity of mapping, supported values are
+ *		CORE_MMU_PGDIR_SIZE or SMALL_PAGE_SIZE. This value must
+ *		match the actual mappings.
+ */
+void tlbi_mva_range(vaddr_t va, size_t len, size_t granule);
 
-/* TLB invalidation for a range of virtual address */
-void tlbi_mva_range(vaddr_t va, size_t size, size_t granule);
+/*
+ * tlbi_mva_range_asid() - Invalidate TLB for virtual address range for
+ *			   a specific ASID
+ * @va:		start virtual address, must be a multiple of @granule
+ * @len:	length in bytes of range, must be a multiple of @granule
+ * @granule:	granularity of mapping, supported values are
+ *		CORE_MMU_PGDIR_SIZE or SMALL_PAGE_SIZE. This value must
+ *		match the actual mappings.
+ * @asid:	Address space identifier
+ */
+void tlbi_mva_range_asid(vaddr_t va, size_t len, size_t granule, uint32_t asid);
 
-/* deprecated: please call straight tlbi_all() and friends */
-int core_tlb_maintenance(int op, unsigned long a) __deprecated;
-
-/* Cache maintenance operation type (deprecated with core_tlb_maintenance()) */
+/* Cache maintenance operation type */
 enum cache_op {
 	DCACHE_CLEAN,
 	DCACHE_AREA_CLEAN,
@@ -693,6 +705,7 @@ struct mmu_partition *core_alloc_mmu_prtn(void *tables);
 void core_free_mmu_prtn(struct mmu_partition *prtn);
 void core_mmu_set_prtn(struct mmu_partition *prtn);
 void core_mmu_set_default_prtn(void);
+void core_mmu_set_default_prtn_tbl(void);
 
 void core_mmu_init_virtualization(void);
 #endif

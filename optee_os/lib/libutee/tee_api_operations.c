@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BSD-2-Clause
 /*
  * Copyright (c) 2014, STMicroelectronics International N.V.
+ * Copyright (c) 2021, SumUp Services GmbH
  */
 #include <config.h>
 #include <stdlib.h>
@@ -251,6 +252,7 @@ TEE_Result TEE_AllocateOperation(TEE_OperationHandle *operation,
 	case TEE_ALG_DES_CBC_MAC_PKCS5:
 	case TEE_ALG_DES3_CBC_MAC_NOPAD:
 	case TEE_ALG_DES3_CBC_MAC_PKCS5:
+	case TEE_ALG_DES3_CMAC:
 	case TEE_ALG_HMAC_MD5:
 	case TEE_ALG_HMAC_SHA1:
 	case TEE_ALG_HMAC_SHA224:
@@ -1107,15 +1109,18 @@ TEE_Result TEE_CipherDoFinal(TEE_OperationHandle operation,
 	}
 
 	if (operation->block_size > 1) {
-		res = tee_buffer_update(operation, _utee_cipher_update,
-					srcData, srcLen, dst, &tmp_dlen);
-		if (res != TEE_SUCCESS)
-			goto out;
+		if (srcLen) {
+			res = tee_buffer_update(operation, _utee_cipher_update,
+						srcData, srcLen, dst,
+						&tmp_dlen);
+			if (res != TEE_SUCCESS)
+				goto out;
 
-		dst += tmp_dlen;
-		acc_dlen += tmp_dlen;
+			dst += tmp_dlen;
+			acc_dlen += tmp_dlen;
 
-		tmp_dlen = *destLen - acc_dlen;
+			tmp_dlen = *destLen - acc_dlen;
+		}
 		res = _utee_cipher_final(operation->state, operation->buffer,
 					 operation->buffer_offs, dst,
 					 &tmp_dlen);

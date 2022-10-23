@@ -390,6 +390,7 @@ static void bigint_binary_mod(TEE_BigInt *dest, const TEE_BigInt *op1,
 	if (pop2 == &mpi_op2)
 		mbedtls_mpi_free(&mpi_op2);
 	mbedtls_mpi_free(&mpi_t);
+	mbedtls_mpi_free(&mpi_n);
 }
 
 void TEE_BigIntAdd(TEE_BigInt *dest, const TEE_BigInt *op1,
@@ -710,9 +711,7 @@ void TEE_BigIntComputeExtendedGcd(TEE_BigInt *gcd, TEE_BigInt *u,
 		get_mpi(&mpi_op2, op2);
 
 	if (!u && !v) {
-		if (gcd)
-			MPI_CHECK(mbedtls_mpi_gcd(&mpi_gcd_res, &mpi_op1,
-						  pop2));
+		MPI_CHECK(mbedtls_mpi_gcd(&mpi_gcd_res, &mpi_op1, pop2));
 	} else {
 		mbedtls_mpi mpi_u;
 		mbedtls_mpi mpi_v;

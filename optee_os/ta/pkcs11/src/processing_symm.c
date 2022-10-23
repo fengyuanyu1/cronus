@@ -20,6 +20,11 @@
 #include "processing.h"
 #include "serializer.h"
 
+struct input_data_ref {
+	size_t size;
+	void *data;
+};
+
 bool processing_is_tee_symm(enum pkcs11_mechanism_id proc_id)
 {
 	switch (proc_id) {
@@ -36,6 +41,8 @@ bool processing_is_tee_symm(enum pkcs11_mechanism_id proc_id)
 	case PKCS11_CKM_AES_CBC_PAD:
 	case PKCS11_CKM_AES_CTS:
 	case PKCS11_CKM_AES_CTR:
+	case PKCS11_CKM_AES_ECB_ENCRYPT_DATA:
+	case PKCS11_CKM_AES_CBC_ENCRYPT_DATA:
 		return true;
 	default:
 		return false;
@@ -53,6 +60,8 @@ pkcs2tee_algorithm(uint32_t *tee_id, struct pkcs11_attribute_head *proc_params)
 		{ PKCS11_CKM_AES_ECB, TEE_ALG_AES_ECB_NOPAD },
 		{ PKCS11_CKM_AES_CBC, TEE_ALG_AES_CBC_NOPAD },
 		{ PKCS11_CKM_AES_CBC_PAD, TEE_ALG_AES_CBC_NOPAD },
+		{ PKCS11_CKM_AES_ECB_ENCRYPT_DATA, TEE_ALG_AES_ECB_NOPAD },
+		{ PKCS11_CKM_AES_CBC_ENCRYPT_DATA, TEE_ALG_AES_CBC_NOPAD },
 		{ PKCS11_CKM_AES_CTR, TEE_ALG_AES_CTR },
 		{ PKCS11_CKM_AES_CTS, TEE_ALG_AES_CTS },
 		/* HMAC flavors */
@@ -185,9 +194,8 @@ allocate_tee_operation(struct pkcs11_session *session,
 	case PKCS11_CKM_SHA256_HMAC:
 	case PKCS11_CKM_SHA384_HMAC:
 	case PKCS11_CKM_SHA512_HMAC:
-		mechanism_supported_key_sizes(params->id,
-					      &min_key_size,
-					      &max_key_size);
+		mechanism_supported_key_sizes_bytes(params->id, &min_key_size,
+						    &max_key_size);
 		if (key_size < min_key_size)
 			return PKCS11_CKR_KEY_SIZE_RANGE;
 
@@ -302,9 +310,9 @@ static enum pkcs11_rc load_tee_key(struct pkcs11_session *session,
 		if (rc)
 			return rc;
 
-		mechanism_supported_key_sizes(proc_params->id,
-					      &min_key_size,
-					      &max_key_size);
+		mechanism_supported_key_sizes_bytes(proc_params->id,
+						    &min_key_size,
+						    &max_key_size);
 
 		if ((object_size / 8) > max_key_size) {
 			rc = hash_secret_helper(proc_params->id, obj, &tee_attr,
@@ -367,6 +375,77 @@ error:
 }
 
 static enum pkcs11_rc
+tee_init_derive_symm(struct active_processing *processing,
+		     struct pkcs11_attribute_head *proc_params)
+{
+	struct serialargs args = { };
+	enum pkcs11_rc rc = PKCS11_CKR_OK;
+	struct input_data_ref *param = NULL;
+	void *iv = NULL;
+
+	if (!proc_params)
+		return PKCS11_CKR_ARGUMENTS_BAD;
+
+	param =	TEE_Malloc(sizeof(struct input_data_ref), TEE_MALLOC_FILL_ZERO);
+	if (!param)
+		return PKCS11_CKR_DEVICE_MEMORY;
+
+	serialargs_init(&args, proc_params->data, proc_params->size);
+
+	switch (proc_params->id) {
+	case PKCS11_CKM_AES_CBC_ENCRYPT_DATA:
+		rc = serialargs_get_ptr(&args, &iv, 16);
+		if (rc)
+			goto err;
+		break;
+	default:
+		break;
+	}
+
+	rc = serialargs_get(&args, &param->size, sizeof(uint32_t));
+	if (rc)
+		goto err;
+
+	rc = serialargs_get_ptr(&args, &param->data, param->size);
+	if (rc)
+		goto err;
+
+	if (serialargs_remaining_bytes(&args)) {
+		rc = PKCS11_CKR_ARGUMENTS_BAD;
+		goto err;
+	}
+
+	processing->extra_ctx = param;
+
+	switch (proc_params->id) {
+	case PKCS11_CKM_AES_ECB_ENCRYPT_DATA:
+		if (param->size % TEE_AES_BLOCK_SIZE) {
+			rc = PKCS11_CKR_DATA_LEN_RANGE;
+			goto err;
+		}
+		TEE_CipherInit(processing->tee_op_handle, NULL, 0);
+		break;
+	case PKCS11_CKM_AES_CBC_ENCRYPT_DATA:
+		if (param->size % TEE_AES_BLOCK_SIZE) {
+			rc = PKCS11_CKR_DATA_LEN_RANGE;
+			goto err;
+		}
+		TEE_CipherInit(processing->tee_op_handle, iv, 16);
+		break;
+	default:
+		TEE_Panic(proc_params->id);
+		break;
+	}
+
+	return PKCS11_CKR_OK;
+
+err:
+	processing->extra_ctx = NULL;
+	TEE_Free(param);
+	return rc;
+}
+
+static enum pkcs11_rc
 init_tee_operation(struct pkcs11_session *session,
 		   struct pkcs11_attribute_head *proc_params)
 {
@@ -406,6 +485,10 @@ init_tee_operation(struct pkcs11_session *session,
 		rc = tee_init_ctr_operation(session->processing,
 					    proc_params->data,
 					    proc_params->size);
+		break;
+	case PKCS11_CKM_AES_ECB_ENCRYPT_DATA:
+	case PKCS11_CKM_AES_CBC_ENCRYPT_DATA:
+		rc = tee_init_derive_symm(session->processing, proc_params);
 		break;
 	default:
 		TEE_Panic(proc_params->id);
@@ -709,6 +792,43 @@ out:
 			rc = PKCS11_CKR_ARGUMENTS_BAD;
 			break;
 		}
+	}
+
+	return rc;
+}
+
+enum pkcs11_rc derive_key_by_symm_enc(struct pkcs11_session *session,
+				      void **out_buf, uint32_t *out_size)
+{
+	enum pkcs11_rc rc = PKCS11_CKR_GENERAL_ERROR;
+	TEE_Result res = TEE_ERROR_GENERIC;
+	struct active_processing *proc = session->processing;
+	struct input_data_ref *input = proc->extra_ctx;
+	void *in_buf = NULL;
+	uint32_t in_size = 0;
+
+	switch (proc->mecha_type) {
+	case PKCS11_CKM_AES_ECB_ENCRYPT_DATA:
+	case PKCS11_CKM_AES_CBC_ENCRYPT_DATA:
+		if (!proc->extra_ctx)
+			return PKCS11_CKR_ARGUMENTS_BAD;
+
+		in_buf = input->data;
+		in_size = input->size;
+
+		*out_size = in_size;
+		*out_buf = TEE_Malloc(*out_size, 0);
+		if (!*out_buf)
+			return PKCS11_CKR_DEVICE_MEMORY;
+
+		res = TEE_CipherDoFinal(proc->tee_op_handle, in_buf, in_size,
+					*out_buf, out_size);
+		rc = tee2pkcs_error(res);
+		if (rc)
+			TEE_Free(*out_buf);
+		break;
+	default:
+		return PKCS11_CKR_MECHANISM_INVALID;
 	}
 
 	return rc;

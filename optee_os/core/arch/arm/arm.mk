@@ -11,7 +11,6 @@ include mk/$(COMPILER_core).mk
 # Defines the cc-option macro using the compiler set for the core module
 include mk/cc-option.mk
 
-CFG_LTC_OPTEE_THREAD ?= y
 # Size of emulated TrustZone protected SRAM, 448 kB.
 # Only applicable when paging is enabled.
 CFG_CORE_TZSRAM_EMUL_SIZE ?= 458752
@@ -23,7 +22,7 @@ endif
 
 CFG_LPAE_ADDR_SPACE_BITS ?= 32
 
-CFG_MMAP_REGIONS ?= 13
+CFG_MMAP_REGIONS ?= 24
 CFG_RESERVED_VASPACE_SIZE ?= (1024 * 1024 * 10)
 
 ifeq ($(CFG_ARM64_core),y)
@@ -155,7 +154,7 @@ $(call force,CFG_CC_OPT_LEVEL,0)
 endif
 
 # Optimize for size by default, usually gives good performance too
-CFG_CC_OPT_LEVEL ?= s
+CFG_CC_OPT_LEVEL ?= 1
 platform-cflags-optimization ?= -O$(CFG_CC_OPT_LEVEL)
 
 CFG_DEBUG_INFO ?= y

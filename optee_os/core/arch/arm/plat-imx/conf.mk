@@ -86,6 +86,7 @@ $(call force,CFG_MX6ULL,y)
 $(call force,CFG_TEE_CORE_NB_CORE,1)
 $(call force,CFG_IMX_CAAM,n)
 $(call force,CFG_NXP_CAAM,n)
+$(call force,CFG_IMX_DCP,y)
 include core/arch/arm/cpu/cortex-a7.mk
 else ifneq (,$(filter $(PLATFORM_FLAVOR),$(mx6q-flavorlist)))
 $(call force,CFG_MX6,y)
@@ -116,12 +117,14 @@ $(call force,CFG_MX6SL,y)
 $(call force,CFG_TEE_CORE_NB_CORE,1)
 $(call force,CFG_IMX_CAAM,n)
 $(call force,CFG_NXP_CAAM,n)
+$(call force,CFG_IMX_DCP,y)
 else ifneq (,$(filter $(PLATFORM_FLAVOR),$(mx6sll-flavorlist)))
 $(call force,CFG_MX6,y)
 $(call force,CFG_MX6SLL,y)
 $(call force,CFG_TEE_CORE_NB_CORE,1)
 $(call force,CFG_IMX_CAAM,n)
 $(call force,CFG_NXP_CAAM,n)
+$(call force,CFG_IMX_DCP,y)
 else ifneq (,$(filter $(PLATFORM_FLAVOR),$(mx6sx-flavorlist)))
 $(call force,CFG_MX6,y)
 $(call force,CFG_MX6SX,y)
@@ -362,11 +365,14 @@ CFG_SECURE_TIME_SOURCE_REE ?= y
 CFG_UART_BASE ?= UART1_BASE
 endif
 
-ifneq (,$(filter y, $(CFG_MX6) $(CFG_MX7)))
+ifneq (,$(filter y, $(CFG_MX6) $(CFG_MX7) $(CFG_MX8MM)))
 $(call force,CFG_IMX_UART,y)
 ifeq ($(CFG_RPMB_FS),y)
 CFG_IMX_SNVS ?= y
 endif
+endif
+
+ifneq (,$(filter y, $(CFG_MX6) $(CFG_MX7)))
 CFG_CSU ?= y
 endif
 

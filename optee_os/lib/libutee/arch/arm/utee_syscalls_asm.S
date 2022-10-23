@@ -122,3 +122,12 @@
                      TEE_SCN_CRYP_OBJ_GENERATE_KEY, 4
 
         UTEE_SYSCALL _utee_cache_operation, TEE_SCN_CACHE_OPERATION, 3
+
+        UTEE_SYSCALL	_utee_fs_open,	        TEE_SCN_FS_OPEN,		4
+        UTEE_SYSCALL	_utee_fs_read,	        TEE_SCN_FS_READ,	        5
+        UTEE_SYSCALL	_utee_fs_write,		TEE_SCN_FS_WRITE,		8
+        UTEE_SYSCALL	_utee_fs_close,	        TEE_SCN_FS_CLOSE,	        1
+        UTEE_SYSCALL    _utee_dev_ioctl,        TEE_SCN_DEV_IOCTL,              4
+        UTEE_SYSCALL    _utee_mmap,             TEE_SCN_MM_MMAP,                7
+        UTEE_SYSCALL    _utee_mremap,           TEE_SCN_MM_MREMAP,              5
+        UTEE_SYSCALL    _utee_munmap,           TEE_SCN_MM_MUNMAP,              3

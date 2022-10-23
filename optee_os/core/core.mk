@@ -1,5 +1,8 @@
 include mk/cleanvars.mk
 
+# Include kernel memconfig flags
+include core/include/linux_headers/linux_include/config/auto.conf
+
 # Set current submodule (used for module specific flags compile result etc)
 sm := core
 sm-$(sm) := y
@@ -17,7 +20,27 @@ PLATFORM_FLAVOR_$(PLATFORM_FLAVOR) := y
 $(eval $(call cfg-depends-all,CFG_PAGED_USER_TA,CFG_WITH_PAGER CFG_WITH_USER_TA))
 include core/crypto.mk
 
-cppflags$(sm)	+= -D__KERNEL__
+cflags$(sm)	+= -D__KERNEL__
+
+# Include kernel header files
+cflags$(sm) += -Icore/include/linux_headers/arch_header
+cflags$(sm) += -Icore/include/linux_headers/arch_header/generated
+cflags$(sm) += -Icore/include/linux_headers/linux_include
+cflags$(sm) += -Icore/include/linux_headers/arch_header/uapi
+cflags$(sm) += -Icore/include/linux_headers/arch_header/generated/uapi
+cflags$(sm) += -Icore/include/linux_headers/linux_include/uapi
+cflags$(sm) += -Icore/include/linux_headers/linux_include/generated/uapi
+cflags$(sm) += -Icore/include/linux_headers/kernel_header_include/
+
+NOUVEAU_PATH := core/drivers/gpu/drm/nouveau
+cflags$(sm)  += -I$(NOUVEAU_PATH)/include
+cflags$(sm)  += -I$(NOUVEAU_PATH)/include/nvkm
+cflags$(sm)  += -I$(NOUVEAU_PATH)/nvkm
+cflags$(sm)  += -I$(NOUVEAU_PATH)
+cflags$(sm)  += -Icore/drivers/gpu/
+
+cflags$(sm) += -include core/include/kconfig.h
+cflags$(sm) += -DKBUILD_MODNAME=\"secure_pci\" -DKBUILD_MODFILE=\"driver/secure_pci\"
 
 cppflags$(sm)	+= -Icore/include
 cppflags$(sm)	+= -include $(conf-file)
@@ -51,6 +74,16 @@ ifeq ($(CFG_SYSCALL_FTRACE),y)
 cflags$(sm)	+= -pg
 endif
 aflags$(sm)	+= $(core-platform-aflags)
+
+aflags$(sm) += -Icore/include/linux_headers/arch_header
+aflags$(sm) += -Icore/include/linux_headers/arch_header/generated
+aflags$(sm) += -Icore/include/linux_headers/linux_include
+aflags$(sm) += -Icore/include/linux_headers/arch_header/uapi
+aflags$(sm) += -Icore/include/linux_headers/arch_header/generated/uapi
+aflags$(sm) += -Icore/include/linux_headers/linux_include/uapi
+aflags$(sm) += -Icore/include/linux_headers/linux_include/generated/uapi
+aflags$(sm) += -Icore/include/linux_headers/kernel_header_include/
+aflags$(sm) += -D__ASSEMBLY__=1
 
 cppflags$(sm) += -DTRACE_LEVEL=$(CFG_TEE_CORE_LOG_LEVEL)
 ifeq ($(CFG_TEE_CORE_MALLOC_DEBUG),y)

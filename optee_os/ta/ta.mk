@@ -105,6 +105,42 @@ libuuid = be807bbd-81e1-4dc4-bd99-3d363f240ece
 libl = utee utils
 include mk/lib.mk
 
+WARNS := lowest
+libname = utils-user
+libdir = lib/libutils-user
+libuuid = f8d53f0c-eb85-11eb-9a03-0242ac130003
+include mk/lib.mk
+
+libname = drm
+libdir = lib/libdrm
+libuuid = ffcb38c0-eb85-11eb-9a03-0242ac130003
+include mk/lib.mk
+
+libname = gdev
+libdir = lib/libgdev
+libuuid = acdc1eaa-ef7b-11eb-9a03-0242ac130003
+include mk/lib.mk
+
+libname = cxx
+libdir = lib/libcxx
+libuuid = fc9055ae-4bf5-45ef-90f7-54eec5b2c4ef
+include mk/lib.mk
+
+libname = vta
+libdir = lib/libvta
+libuuid = d6c9e785-7444-447a-843c-675aa87dc4a8
+include mk/lib.mk
+
+libname = rpc
+libdir = lib/librpc
+libuuid = 671c8705-0300-4cbc-ad3e-915420b0e833
+include mk/lib.mk
+
+libname = rpcs
+libdir = lib/librpcs
+libuuid = 9c19a577-42ef-4ca1-80ff-3e877797888d
+include mk/lib.mk
+
 base-prefix :=
 
 incdirs-host := $(filter-out lib/libutils%, $(incdirs$(sm)))

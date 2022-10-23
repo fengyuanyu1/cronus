@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: BSD-2-Clause
 /*
- * Copyright (c) 2015, Linaro Limited
+ * Copyright (c) 2015-2021, Linaro Limited
  */
 
 #include <arm.h>
@@ -237,7 +237,7 @@ void abort_print_error(struct abort_info *ai)
 }
 
 /* This function must be called from a normal thread */
-void abort_print_current_ta(void)
+void abort_print_current_ts(void)
 {
 	struct thread_specific_data *tsd = thread_get_tsd();
 	struct abort_info ai = { };
@@ -440,6 +440,19 @@ static bool is_vfp_fault(struct abort_info *ai __unused)
 	return false;
 }
 #endif  /*CFG_WITH_VFP && CFG_WITH_USER_TA*/
+
+bool abort_is_write_fault(struct abort_info *ai)
+{
+#ifdef ARM32
+	unsigned int write_not_read = 11;
+#endif
+#ifdef ARM64
+	unsigned int write_not_read = 6;
+#endif
+
+	return ai->abort_type == ABORT_TYPE_DATA &&
+	       (ai->fault_descr & BIT(write_not_read));
+}
 
 static enum fault_type get_fault_type(struct abort_info *ai)
 {

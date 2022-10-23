@@ -10,6 +10,7 @@
 #include <tee_internal_api_extensions.h>
 #include <util.h>
 
+#include "attributes.h"
 #include "pkcs11_token.h"
 #include "pkcs11_helpers.h"
 
@@ -315,6 +316,8 @@ enum pkcs11_rc create_object_uuid(struct ck_token *token,
 	if (!obj->uuid)
 		return PKCS11_CKR_DEVICE_MEMORY;
 
+	obj->token = token;
+
 	do {
 		TEE_GenerateRandom(obj->uuid, sizeof(TEE_UUID));
 	} while (get_persistent_obj_idx(token, obj->uuid) >= 0);
@@ -538,6 +541,36 @@ void release_persistent_object_attributes(struct pkcs11_object *obj)
 	obj->attributes = NULL;
 }
 
+enum pkcs11_rc update_persistent_object_attributes(struct pkcs11_object *obj)
+{
+	TEE_Result res = TEE_ERROR_GENERIC;
+	TEE_ObjectHandle hdl = TEE_HANDLE_NULL;
+	uint32_t tee_obj_flags = TEE_DATA_FLAG_ACCESS_WRITE;
+	size_t size = 0;
+
+	assert(obj && obj->attributes);
+
+	res = TEE_OpenPersistentObject(TEE_STORAGE_PRIVATE,
+				       obj->uuid, sizeof(*obj->uuid),
+				       tee_obj_flags, &hdl);
+	if (res) {
+		EMSG("OpenPersistent failed %#"PRIx32, res);
+		return tee2pkcs_error(res);
+	}
+
+	size = sizeof(struct obj_attrs) + obj->attributes->attrs_size;
+
+	res = TEE_WriteObjectData(hdl, obj->attributes, size);
+	if (res)
+		goto out;
+
+	res = TEE_TruncateObjectData(hdl, size);
+
+out:
+	TEE_CloseObject(hdl);
+	return tee2pkcs_error(res);
+}
+
 /*
  * Return the token instance, either initialized from reset or initialized
  * from the token persistent state if found.
@@ -606,7 +639,7 @@ struct ck_token *init_persistent_db(unsigned int token_id)
 
 			TEE_MemMove(uuid, &db_objs->uuids[idx], sizeof(*uuid));
 
-			obj = create_token_object(NULL, uuid);
+			obj = create_token_object(NULL, uuid, token);
 			if (!obj)
 				TEE_Panic(0);
 

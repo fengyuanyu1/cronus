@@ -516,10 +516,28 @@ shadow_stack_access_ok:
 	bl	console_init
 #endif
 
+#ifdef CFG_VIRTUALIZATION
+	/*
+	 * Initialize partition tables for each partition to
+	 * default_partition which has been relocated now to a different VA
+	 */
+	bl	core_mmu_set_default_prtn_tbl
+#endif
+
 	mov	r0, r4		/* pageable part address */
 	mov	r1, r5		/* ns-entry address */
-	mov	r2, r6		/* DT address */
-	bl	boot_init_primary
+	bl	boot_init_primary_early
+#ifndef CFG_VIRTUALIZATION
+	mov	r7, sp
+	ldr	r0, =threads
+	ldr	r0, [r0, #THREAD_CTX_STACK_VA_END]
+	mov	sp, r0
+#endif
+	mov	r0, r6		/* DT address */
+	bl	boot_init_primary_late
+#ifndef CFG_VIRTUALIZATION
+	mov	sp, r7
+#endif
 
 	/*
 	 * In case we've touched memory that secondary CPUs will use before
@@ -549,7 +567,9 @@ shadow_stack_access_ok:
 	 * next entry. Matches the thread_init_boot_thread() in
 	 * boot.c.
 	 */
+#ifndef CFG_VIRTUALIZATION
 	bl 	thread_clr_boot_thread
+#endif
 
 #ifdef CFG_CORE_FFA
 	ldr	r0, =cpu_on_handler

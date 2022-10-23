@@ -3,6 +3,7 @@
  * Copyright (c) 2017-2020, Linaro Limited
  */
 
+#include <assert.h>
 #include <bitstring.h>
 #include <pkcs11_ta.h>
 #include <stdlib.h>
@@ -228,29 +229,8 @@ static uint32_t sanitize_indirect_attr(struct obj_attrs **dst,
 {
 	struct obj_attrs *obj2 = NULL;
 	enum pkcs11_rc rc = PKCS11_CKR_OK;
-	enum pkcs11_class_id class = get_class(*dst);
 
-	/*
-	 * Serialized attributes: current applicable only to the key
-	 * templates which are tables of attributes.
-	 */
-	switch (cli_ref->id) {
-	case PKCS11_CKA_WRAP_TEMPLATE:
-	case PKCS11_CKA_UNWRAP_TEMPLATE:
-	case PKCS11_CKA_DERIVE_TEMPLATE:
-		break;
-	default:
-		return PKCS11_RV_NOT_FOUND;
-	}
-
-	if (class == PKCS11_CKO_UNDEFINED_ID) {
-		DMSG("Template without CLASS not supported yet");
-		return PKCS11_CKR_TEMPLATE_INCOMPLETE;
-	}
-
-	/* Such attributes are expected only for keys (and vendor defined) */
-	if (pkcs11_attr_class_is_key(class))
-		return PKCS11_CKR_TEMPLATE_INCONSISTENT;
+	assert(pkcs11_attr_has_indirect_attributes(cli_ref->id));
 
 	rc = init_attributes_head(&obj2);
 	if (rc)
@@ -313,11 +293,13 @@ enum pkcs11_rc sanitize_client_object(struct obj_attrs **dst, void *src,
 		    pkcs11_attr_is_boolean(cli_ref.id))
 			continue;
 
-		rc = sanitize_indirect_attr(dst, &cli_ref, data);
-		if (rc == PKCS11_CKR_OK)
+		if (pkcs11_attr_has_indirect_attributes(cli_ref.id)) {
+			rc = sanitize_indirect_attr(dst, &cli_ref, data);
+			if (rc)
+				return rc;
+
 			continue;
-		if (rc != PKCS11_RV_NOT_FOUND)
-			return rc;
+		}
 
 		if (!valid_pkcs11_attribute_id(cli_ref.id, cli_ref.size)) {
 			EMSG("Invalid attribute id %#"PRIx32, cli_ref.id);
@@ -356,6 +338,7 @@ static void __trace_attributes(char *prefix, void *src, void *end)
 		struct pkcs11_attribute_head pkcs11_ref;
 		uint8_t data[4] = { 0 };
 		uint32_t data_u32 = 0;
+		char *start = NULL;
 
 		TEE_MemMove(&pkcs11_ref, cur, sizeof(pkcs11_ref));
 		TEE_MemMove(&data[0], cur + sizeof(pkcs11_ref),
@@ -399,9 +382,9 @@ static void __trace_attributes(char *prefix, void *src, void *end)
 		case PKCS11_CKA_WRAP_TEMPLATE:
 		case PKCS11_CKA_UNWRAP_TEMPLATE:
 		case PKCS11_CKA_DERIVE_TEMPLATE:
-			trace_attributes_from_api_head(prefix2,
-						       cur + sizeof(pkcs11_ref),
-						       (char *)end - cur);
+			start = cur + sizeof(pkcs11_ref);
+			trace_attributes_from_api_head(prefix2, start,
+						       (char *)end - start);
 			break;
 		default:
 			break;

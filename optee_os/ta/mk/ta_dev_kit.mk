@@ -67,8 +67,10 @@ cppflags$(sm) += -pg
 endif
 
 libdirs += $(ta-dev-kit-dir$(sm))/lib
-libnames += utils
-libdeps += $(ta-dev-kit-dir$(sm))/lib/libutils.a
+# libnames += utils
+# libdeps += $(ta-dev-kit-dir$(sm))/lib/libutils.a
+libnames += utils-user
+libdeps += $(ta-dev-kit-dir$(sm))/lib/libutils-user.a
 libnames += utee
 libdeps += $(ta-dev-kit-dir$(sm))/lib/libutee.a
 ifeq ($(CFG_TA_MBEDTLS),y)
@@ -85,8 +87,35 @@ libdeps += $(ta-dev-kit-dir$(sm))/lib/libdl.a
 # But if we place libutils before libgcc, linker will not be able to resolve
 # __getauxval. So we need to link with libutils twice: before and after libgcc.
 # Hence it included both in $(libnames) and in $(libnames-after-libgcc)
-libnames-after-libgcc += utils
-libdeps-after-libgcc += $(ta-dev-kit-dir$(sm))/lib/libutils.a
+# libnames-after-libgcc += utils
+# libdeps-after-libgcc += $(ta-dev-kit-dir$(sm))/lib/libutils.a
+libnames-after-libgcc += utils-user
+libdeps-after-libgcc += $(ta-dev-kit-dir$(sm))/lib/libutils-user.a
+
+muslcdir := $(ta-dev-kit-dir$(sm))/include/muslc
+gdevdir := $(ta-dev-kit-dir$(sm))/include/gdev
+cxxdir := $(ta-dev-kit-dir$(sm))/include/c++/v1
+
+MUSLC_ARCH := arm
+ifeq ($(shell basename $(ta-dev-kit-dir$(sm))),export-ta_arm64)
+MUSLC_ARCH := aarch64
+endif
+
+musl-cflags$(sm) :=	-I$(muslcdir)/arch/$(MUSLC_ARCH) \
+					-I$(muslcdir)/arch/generic \
+					-I$(muslcdir)/src/include \
+					-I$(muslcdir)/include \
+					-I$(gdevdir)/common \
+					$(cflags$(sm))
+
+cflags$(sm) := $(musl-cflags$(sm))
+
+# musl-cppflags$(sm) := $(cppflags$(sm)) \
+# 					-I$(muslcdir)/arch/$(MUSLC_ARCH) \
+# 					-I$(muslcdir)/include
+
+# cppflags$(sm) := $(musl-cppflags$(sm))
+cppflags$(sm) += -std=c++17
 
 # Pass config variable (CFG_) from conf.mk on the command line
 cppflags$(sm) += $(strip \

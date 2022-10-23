@@ -29,7 +29,6 @@ CFG_BOOT_SECONDARY_REQUEST ?= y
 endif
 
 ifeq ($(PLATFORM_FLAVOR),ls1012ardb)
-CFG_HW_UNQ_KEY_REQUEST ?= y
 include core/arch/arm/cpu/cortex-armv8-0.mk
 $(call force,CFG_TEE_CORE_NB_CORE,1)
 $(call force,CFG_DRAM0_SIZE,0x40000000)
@@ -38,7 +37,6 @@ CFG_SHMEM_SIZE ?= 0x00200000
 endif
 
 ifeq ($(PLATFORM_FLAVOR),ls1012afrwy)
-CFG_HW_UNQ_KEY_REQUEST ?= y
 include core/arch/arm/cpu/cortex-armv8-0.mk
 $(call force,CFG_TEE_CORE_NB_CORE,1)
 $(call force,CFG_CORE_CLUSTER_SHIFT,2)
@@ -47,7 +45,6 @@ CFG_SHMEM_SIZE ?= 0x00200000
 endif
 
 ifeq ($(PLATFORM_FLAVOR),ls1043ardb)
-CFG_HW_UNQ_KEY_REQUEST ?= y
 include core/arch/arm/cpu/cortex-armv8-0.mk
 $(call force,CFG_TEE_CORE_NB_CORE,4)
 $(call force,CFG_DRAM0_SIZE,0x80000000)
@@ -56,7 +53,6 @@ CFG_SHMEM_SIZE ?= 0x00200000
 endif
 
 ifeq ($(PLATFORM_FLAVOR),ls1046ardb)
-CFG_HW_UNQ_KEY_REQUEST ?= y
 include core/arch/arm/cpu/cortex-armv8-0.mk
 $(call force,CFG_CAAM_BIG_ENDIAN,y)
 $(call force,CFG_TEE_CORE_NB_CORE,4)
@@ -66,7 +62,6 @@ CFG_SHMEM_SIZE ?= 0x00200000
 endif
 
 ifeq ($(PLATFORM_FLAVOR),ls1088ardb)
-CFG_HW_UNQ_KEY_REQUEST ?= y
 include core/arch/arm/cpu/cortex-armv8-0.mk
 $(call force,CFG_TEE_CORE_NB_CORE,8)
 $(call force,CFG_DRAM0_SIZE,0x80000000)
@@ -76,7 +71,6 @@ CFG_SHMEM_SIZE ?= 0x00200000
 endif
 
 ifeq ($(PLATFORM_FLAVOR),ls2088ardb)
-CFG_HW_UNQ_KEY_REQUEST ?= y
 include core/arch/arm/cpu/cortex-armv8-0.mk
 $(call force,CFG_TEE_CORE_NB_CORE,8)
 $(call force,CFG_DRAM0_SIZE,0x80000000)
@@ -85,20 +79,44 @@ $(call force,CFG_ARM_GICV3,y)
 CFG_SHMEM_SIZE ?= 0x00200000
 endif
 
+ifeq ($(PLATFORM_FLAVOR),lx2160aqds)
+include core/arch/arm/cpu/cortex-armv8-0.mk
+$(call force,CFG_TEE_CORE_NB_CORE,16)
+$(call force,CFG_DRAM0_SIZE,0x80000000)
+$(call force,CFG_DRAM1_BASE,0x2080000000)
+$(call force,CFG_DRAM1_SIZE,0x1F80000000)
+$(call force,CFG_CORE_CLUSTER_SHIFT,1)
+$(call force,CFG_ARM_GICV3,y)
+$(call force,CFG_PL011,y)
+$(call force,CFG_CORE_ARM64_PA_BITS,48)
+$(call force,CFG_EMBED_DT,y)
+$(call force,CFG_EMBED_DTB_SOURCE_FILE,fsl-lx2160a-qds.dts)
+CFG_LS_I2C ?= y
+CFG_LS_GPIO ?= y
+CFG_LS_DSPI ?= y
+CFG_SHMEM_SIZE ?= 0x00200000
+endif
+
 ifeq ($(PLATFORM_FLAVOR),lx2160ardb)
-CFG_HW_UNQ_KEY_REQUEST ?= y
 include core/arch/arm/cpu/cortex-armv8-0.mk
 $(call force,CFG_CAAM_LITTLE_ENDIAN,y)
 $(call force,CFG_TEE_CORE_NB_CORE,16)
 $(call force,CFG_DRAM0_SIZE,0x80000000)
+$(call force,CFG_DRAM1_BASE,0x2080000000)
+$(call force,CFG_DRAM1_SIZE,0x1F80000000)
 $(call force,CFG_CORE_CLUSTER_SHIFT,1)
 $(call force,CFG_ARM_GICV3,y)
 $(call force,CFG_PL011,y)
+$(call force,CFG_CORE_ARM64_PA_BITS,48)
+$(call force,CFG_EMBED_DT,y)
+$(call force,CFG_EMBED_DTB_SOURCE_FILE,fsl-lx2160a-rdb.dts)
+CFG_LS_I2C ?= y
+CFG_LS_GPIO ?= y
+CFG_LS_DSPI ?= y
 CFG_SHMEM_SIZE ?= 0x00200000
 endif
 
 ifeq ($(PLATFORM_FLAVOR),ls1028ardb)
-CFG_HW_UNQ_KEY_REQUEST ?= y
 include core/arch/arm/cpu/cortex-armv8-0.mk
 $(call force,CFG_TEE_CORE_NB_CORE,2)
 $(call force,CFG_DRAM0_SIZE,0x80000000)
@@ -143,8 +161,7 @@ ifeq ($(CFG_NXP_CAAM),y)
 # If NXP CAAM Driver is supported, the Crypto Driver interfacing
 # it with generic crypto API can be enabled.
 CFG_CRYPTO_DRIVER ?= y
-CFG_CAAM_64BIT ?= y
-CFG_CRYPTO_DRIVER_DEBUG ?= n
+CFG_CRYPTO_DRIVER_DEBUG ?= 0
 else
 $(call force,CFG_CRYPTO_DRIVER,n)
 $(call force,CFG_WITH_SOFTWARE_PRNG,y)

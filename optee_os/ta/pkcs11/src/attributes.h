@@ -141,16 +141,49 @@ enum pkcs11_rc get_attribute_ptr(struct obj_attrs *head, uint32_t attribute,
  * @attr_size:	Size of the attribute value
  *
  * If attribute is not found, return PKCS11_RV_NOT_FOUND.
- * If attr_size != NULL, check *attr_size matches attributes size and return
- * PKCS11_CKR_BUFFER_TOO_SMALL with expected size in *attr_size.
- * If attr != NULL and attr_size is NULL or gives expected buffer size,
- * copy attribute value into attr.
+ *
+ * If attr_size != NULL, check that attr has enough room for value (compare
+ * against *attr_size), copy attribute value to attr and finally return actual
+ * value size in *attr_size.
+ *
+ * If there is not enough room return PKCS11_CKR_BUFFER_TOO_SMALL with expected
+ * size in *attr_size.
+ *
+ * If attr is NULL and attr_size != NULL return expected buffer size in
+ * *attr_size.
  *
  * Return PKCS11_CKR_OK or PKCS11_RV_NOT_FOUND on success, or a PKCS11 return
  * code.
  */
 enum pkcs11_rc get_attribute(struct obj_attrs *head, uint32_t attribute,
 			     void *attr, uint32_t *attr_size);
+
+/*
+ * set_attribute() - Set the attribute of a given ID with value
+ * @head:	Pointer to serialized attributes where attribute is to be set,
+ *		can be relocated as attributes are modified/added
+ * @attribute:	Attribute ID to look for
+ * @data:	Holds the attribute value to be set
+ * @size:	Size of the attribute value
+ *
+ * Return PKCS11_CKR_OK on success or a PKCS11 return code.
+ */
+enum pkcs11_rc set_attribute(struct obj_attrs **head, uint32_t attribute,
+			     void *data, size_t size);
+
+/*
+ * modify_attributes_list() - Modify the value of attributes in destination
+ * attribute list (serialized attributes) based on the value of attributes in
+ * the source attribute list
+ * @dst:	Pointer to serialized attrbutes where attributes are to be
+ *		modified, can be relocated as attributes are modified
+ * @head:	Serialized attributes containing attributes which need to be
+ *		modified in the destination attribute list
+ *
+ * Return PKCS11_CKR_OK on success
+ */
+enum pkcs11_rc modify_attributes_list(struct obj_attrs **dst,
+				      struct obj_attrs *head);
 
 /*
  * get_u32_attribute() - Copy out the 32-bit attribute value of a given ID

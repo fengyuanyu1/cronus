@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: BSD-2-Clause
 /*
- * Copyright (c) 2016, Linaro Limited
+ * Copyright (c) 2016-2021, Linaro Limited
  * Copyright (c) 2014, STMicroelectronics International N.V.
- * Copyright (c) 2020, Arm Limited
+ * Copyright (c) 2020-2021, Arm Limited
  */
 
 #include <platform_config.h>
@@ -19,6 +19,7 @@
 #include <kernel/misc.h>
 #include <kernel/panic.h>
 #include <kernel/spinlock.h>
+#include <kernel/spmc_sp_handler.h>
 #include <kernel/tee_ta_manager.h>
 #include <kernel/thread_defs.h>
 #include <kernel/thread.h>
@@ -64,7 +65,8 @@ struct thread_core_local thread_core_local[CFG_TEE_CORE_NB_CORE] __nex_bss;
 #endif
 #define STACK_THREAD_SIZE	8192
 
-#if defined(CFG_CORE_SANITIZE_KADDRESS) || defined(__clang__)
+#if defined(CFG_CORE_SANITIZE_KADDRESS) || defined(__clang__) || \
+	!defined(CFG_CRYPTO_WITH_CE)
 #define STACK_ABT_SIZE		3072
 #else
 #define STACK_ABT_SIZE		2048
@@ -445,9 +447,10 @@ static void thread_lazy_restore_ns_vfp(void)
 
 #ifdef ARM32
 static void init_regs(struct thread_ctx *thread, uint32_t a0, uint32_t a1,
-		      uint32_t a2, uint32_t a3)
+		      uint32_t a2, uint32_t a3, uint32_t a4, uint32_t a5,
+		      uint32_t a6, uint32_t a7, void *pc)
 {
-	thread->regs.pc = (uint32_t)thread_std_smc_entry;
+	thread->regs.pc = (uint32_t)pc;
 
 	/*
 	 * Stdcalls starts in SVC mode with masked foreign interrupts, masked
@@ -470,18 +473,19 @@ static void init_regs(struct thread_ctx *thread, uint32_t a0, uint32_t a1,
 	thread->regs.r1 = a1;
 	thread->regs.r2 = a2;
 	thread->regs.r3 = a3;
-	thread->regs.r4 = 0;
-	thread->regs.r5 = 0;
-	thread->regs.r6 = 0;
-	thread->regs.r7 = 0;
+	thread->regs.r4 = a4;
+	thread->regs.r5 = a5;
+	thread->regs.r6 = a6;
+	thread->regs.r7 = a7;
 }
 #endif /*ARM32*/
 
 #ifdef ARM64
 static void init_regs(struct thread_ctx *thread, uint32_t a0, uint32_t a1,
-		      uint32_t a2, uint32_t a3)
+		      uint32_t a2, uint32_t a3, uint32_t a4, uint32_t a5,
+		      uint32_t a6, uint32_t a7, void *pc)
 {
-	thread->regs.pc = (uint64_t)thread_std_smc_entry;
+	thread->regs.pc = (uint64_t)pc;
 
 	/*
 	 * Stdcalls starts in SVC mode with masked foreign interrupts, masked
@@ -500,10 +504,10 @@ static void init_regs(struct thread_ctx *thread, uint32_t a0, uint32_t a1,
 	thread->regs.x[1] = a1;
 	thread->regs.x[2] = a2;
 	thread->regs.x[3] = a3;
-	thread->regs.x[4] = 0;
-	thread->regs.x[5] = 0;
-	thread->regs.x[6] = 0;
-	thread->regs.x[7] = 0;
+	thread->regs.x[4] = a4;
+	thread->regs.x[5] = a5;
+	thread->regs.x[6] = a6;
+	thread->regs.x[7] = a7;
 
 	/* Set up frame pointer as per the Aarch64 AAPCS */
 	thread->regs.x[29] = 0;
@@ -522,21 +526,25 @@ void thread_init_boot_thread(void)
 
 void __nostackcheck thread_clr_boot_thread(void)
 {
+  uint32_t exceptions = thread_mask_exceptions(THREAD_EXCP_ALL);
 	struct thread_core_local *l = thread_get_core_local();
 
 	assert(l->curr_thread >= 0 && l->curr_thread < CFG_NUM_THREADS);
 	assert(threads[l->curr_thread].state == THREAD_STATE_ACTIVE);
 	threads[l->curr_thread].state = THREAD_STATE_FREE;
-	l->curr_thread = -1;
+	l->curr_thread = THREAD_ID_INVALID;
 }
 
-void thread_alloc_and_run(uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3)
+static void __thread_alloc_and_run(uint32_t a0, uint32_t a1, uint32_t a2,
+				   uint32_t a3, uint32_t a4, uint32_t a5,
+				   uint32_t a6, uint32_t a7,
+				   void *pc)
 {
 	size_t n;
 	struct thread_core_local *l = thread_get_core_local();
 	bool found_thread = false;
 
-	assert(l->curr_thread == -1);
+	assert(l->curr_thread == THREAD_ID_INVALID);
 
 	thread_lock_global();
 
@@ -556,7 +564,7 @@ void thread_alloc_and_run(uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3)
 	l->curr_thread = n;
 
 	threads[n].flags = 0;
-	init_regs(threads + n, a0, a1, a2, a3);
+	init_regs(threads + n, a0, a1, a2, a3, a4, a5, a6, a7, pc);
 
 	thread_lazy_save_ns_vfp();
 
@@ -565,6 +573,21 @@ void thread_alloc_and_run(uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3)
 	/*NOTREACHED*/
 	panic();
 }
+
+void thread_alloc_and_run(uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3)
+{
+	__thread_alloc_and_run(a0, a1, a2, a3, 0, 0, 0, 0,
+			       thread_std_smc_entry);
+}
+
+#ifdef CFG_SECURE_PARTITION
+void thread_sp_alloc_and_run(struct thread_smc_args *args __maybe_unused)
+{
+	__thread_alloc_and_run(args->a0, args->a1, args->a2, args->a3, args->a4,
+			       args->a5, args->a6, args->a7,
+			       spmc_sp_thread_entry);
+}
+#endif
 
 #ifdef ARM32
 static void copy_a0_to_a3(struct thread_ctx_regs *regs, uint32_t a0,
@@ -653,7 +676,7 @@ void thread_resume_from_rpc(uint32_t thread_id, uint32_t a0, uint32_t a1,
 	struct thread_core_local *l = thread_get_core_local();
 	bool found_thread = false;
 
-	assert(l->curr_thread == -1);
+	assert(l->curr_thread == THREAD_ID_INVALID);
 
 	thread_lock_global();
 
@@ -693,6 +716,9 @@ void thread_resume_from_rpc(uint32_t thread_id, uint32_t a0, uint32_t a1,
 		ftrace_resume();
 
 	l->flags &= ~THREAD_CLF_TMP;
+
+	// schedule_yield();
+
 	thread_resume(&threads[n].regs);
 	/*NOTREACHED*/
 	panic();
@@ -717,7 +743,7 @@ vaddr_t thread_get_saved_thread_sp(void)
 	struct thread_core_local *l = thread_get_core_local();
 	int ct = l->curr_thread;
 
-	assert(ct != -1);
+	assert(ct != THREAD_ID_INVALID);
 	return threads[ct].kern_sp;
 }
 #endif /*ARM64*/
@@ -727,7 +753,7 @@ vaddr_t thread_stack_start(void)
 	struct thread_ctx *thr;
 	int ct = thread_get_id_may_fail();
 
-	if (ct == -1)
+	if (ct == THREAD_ID_INVALID)
 		return 0;
 
 	thr = threads + ct;
@@ -801,7 +827,8 @@ bool thread_is_in_normal_mode(void)
 	 * If any bit in l->flags is set aside from THREAD_CLF_TMP we're
 	 * handling some exception.
 	 */
-	ret = (l->curr_thread != -1) && !(l->flags & ~THREAD_CLF_TMP);
+	ret = (l->curr_thread != THREAD_ID_INVALID) &&
+	      !(l->flags & ~THREAD_CLF_TMP);
 	thread_unmask_exceptions(exceptions);
 
 	return ret;
@@ -813,7 +840,7 @@ void thread_state_free(void)
 	struct thread_core_local *l = thread_get_core_local();
 	int ct = l->curr_thread;
 
-	assert(ct != -1);
+	assert(ct != THREAD_ID_INVALID);
 
 	thread_lazy_restore_ns_vfp();
 	tee_pager_release_phys(
@@ -825,7 +852,7 @@ void thread_state_free(void)
 	assert(threads[ct].state == THREAD_STATE_ACTIVE);
 	threads[ct].state = THREAD_STATE_FREE;
 	threads[ct].flags = 0;
-	l->curr_thread = -1;
+	l->curr_thread = THREAD_ID_INVALID;
 
 #ifdef CFG_VIRTUALIZATION
 	virt_unset_guest();
@@ -865,7 +892,7 @@ int thread_state_suspend(uint32_t flags, uint32_t cpsr, vaddr_t pc)
 	struct thread_core_local *l = thread_get_core_local();
 	int ct = l->curr_thread;
 
-	assert(ct != -1);
+	assert(ct != THREAD_ID_INVALID);
 
 	if (core_mmu_user_mapping_is_active())
 		ftrace_suspend();
@@ -897,7 +924,7 @@ int thread_state_suspend(uint32_t flags, uint32_t cpsr, vaddr_t pc)
 		core_mmu_set_user_map(NULL);
 	}
 
-	l->curr_thread = -1;
+	l->curr_thread = THREAD_ID_INVALID;
 
 #ifdef CFG_VIRTUALIZATION
 	virt_unset_guest();
@@ -1070,7 +1097,7 @@ void __nostackcheck thread_init_thread_core_local(void)
 	struct thread_core_local *tcl = thread_core_local;
 
 	for (n = 0; n < CFG_TEE_CORE_NB_CORE; n++) {
-		tcl[n].curr_thread = -1;
+		tcl[n].curr_thread = THREAD_ID_INVALID;
 		tcl[n].flags = THREAD_CLF_TMP;
 	}
 
@@ -1203,7 +1230,7 @@ struct thread_ctx_regs * __nostackcheck thread_get_ctx_regs(void)
 {
 	struct thread_core_local *l = thread_get_core_local();
 
-	assert(l->curr_thread != -1);
+	assert(l->curr_thread != THREAD_ID_INVALID);
 	return &threads[l->curr_thread].regs;
 }
 
@@ -1215,7 +1242,7 @@ void thread_set_foreign_intr(bool enable)
 
 	l = thread_get_core_local();
 
-	assert(l->curr_thread != -1);
+	assert(l->curr_thread != THREAD_ID_INVALID);
 
 	if (enable) {
 		threads[l->curr_thread].flags |=
@@ -1239,7 +1266,7 @@ void thread_restore_foreign_intr(void)
 
 	l = thread_get_core_local();
 
-	assert(l->curr_thread != -1);
+	assert(l->curr_thread != THREAD_ID_INVALID);
 
 	if (threads[l->curr_thread].flags & THREAD_FLAGS_FOREIGN_INTR_ENABLE)
 		thread_set_exceptions(exceptions & ~THREAD_EXCP_FOREIGN_INTR);
@@ -1452,6 +1479,7 @@ uint32_t thread_enter_user_mode(unsigned long a0, unsigned long a1,
 	uint32_t spsr = 0;
 	uint32_t exceptions = 0;
 	uint32_t rc = 0;
+	uint32_t cntkctl;
 	struct thread_ctx_regs *regs = NULL;
 
 	tee_ta_update_session_utime_resume();
@@ -1464,6 +1492,11 @@ uint32_t thread_enter_user_mode(unsigned long a0, unsigned long a1,
 	}
 
 	exceptions = thread_mask_exceptions(THREAD_EXCP_ALL);
+
+	// enable reading of system counter
+	cntkctl = read_cntkctl();
+	write_cntkctl(cntkctl | CNTKCTL_PL0PCTEN);
+
 	/*
 	 * We're using the per thread location of saved context registers
 	 * for temporary storage. Now that exceptions are masked they will

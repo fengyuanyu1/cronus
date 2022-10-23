@@ -39,20 +39,9 @@ CFG_CRYPTO_RSA ?= y
 CFG_CRYPTO_DH ?= y
 # ECC includes ECDSA and ECDH
 CFG_CRYPTO_ECC ?= y
-ifeq ($(CFG_CRYPTOLIB_NAME),tomcrypt)
 CFG_CRYPTO_SM2_PKE ?= y
 CFG_CRYPTO_SM2_DSA ?= y
 CFG_CRYPTO_SM2_KEP ?= y
-endif
-ifeq ($(CFG_CRYPTOLIB_NAME)-$(CFG_CRYPTO_SM2_PKE),mbedtls-y)
-$(error Error: CFG_CRYPTO_SM2_PKE=y requires CFG_CRYPTOLIB_NAME=tomcrypt)
-endif
-ifeq ($(CFG_CRYPTOLIB_NAME)-$(CFG_CRYPTO_SM2_DSA),mbedtls-y)
-$(error Error: CFG_CRYPTO_SM2_DSA=y requires CFG_CRYPTOLIB_NAME=tomcrypt)
-endif
-ifeq ($(CFG_CRYPTOLIB_NAME)-$(CFG_CRYPTO_SM2_KEP),mbedtls-y)
-$(error Error: CFG_CRYPTO_SM2_KEP=y requires CFG_CRYPTOLIB_NAME=tomcrypt)
-endif
 
 # Authenticated encryption
 CFG_CRYPTO_CCM ?= y
@@ -214,7 +203,11 @@ _CFG_CORE_LTC_CE := $(CFG_CRYPTO_WITH_CE)
 _CFG_CORE_LTC_VFP := $(CFG_WITH_VFP)
 _CFG_CORE_LTC_BIGNUM_MAX_BITS := $(CFG_CORE_BIGNUM_MAX_BITS)
 _CFG_CORE_LTC_PAGER := $(CFG_WITH_PAGER)
-_CFG_CORE_LTC_OPTEE_THREAD := $(CFG_LTC_OPTEE_THREAD)
+ifneq ($(CFG_NUM_THREADS),1)
+_CFG_CORE_LTC_OPTEE_THREAD := y
+else
+_CFG_CORE_LTC_OPTEE_THREAD := n
+endif
 _CFG_CORE_LTC_HWSUPP_PMULL := $(CFG_HWSUPP_PMULL)
 
 # Assign aggregated variables

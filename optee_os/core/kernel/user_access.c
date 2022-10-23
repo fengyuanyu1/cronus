@@ -7,6 +7,7 @@
 #include <initcall.h>
 #include <kernel/linker.h>
 #include <kernel/user_access.h>
+#include <kernel/user_mode_ctx.h>
 #include <mm/vm.h>
 #include <string.h>
 #include <tee_api_types.h>
@@ -15,9 +16,8 @@
 static TEE_Result check_access(uint32_t flags, vaddr_t va, size_t len)
 {
 	struct ts_session *s = ts_get_current_session();
-	struct user_ta_ctx *utc = to_user_ta_ctx(s->ctx);
 
-	return vm_check_access_rights(&utc->uctx, flags, va, len);
+	return vm_check_access_rights(to_user_mode_ctx(s->ctx), flags, va, len);
 }
 
 TEE_Result copy_from_user(void *kaddr, const void *uaddr, size_t len)
@@ -64,6 +64,16 @@ TEE_Result copy_to_user_private(void *uaddr, const void *kaddr, size_t len)
 	return res;
 }
 
+TEE_Result clear_user(void *uaddr, size_t len) {
+	uint32_t flags = TEE_MEMORY_ACCESS_WRITE | TEE_MEMORY_ACCESS_ANY_OWNER;
+	TEE_Result res = check_access(flags, (vaddr_t)uaddr, len);
+
+	if (!res)
+		memset(uaddr, 0, len);
+
+	return res;
+}
+
 TEE_Result copy_kaddr_to_uref(uint32_t *uref, void *kaddr)
 {
 	uint32_t ref = kaddr_to_uref(kaddr);
@@ -81,3 +91,7 @@ vaddr_t uref_to_vaddr(uint32_t uref)
 {
 	return VCORE_START_VA + uref;
 }
+
+TEE_Result do_copy_to_user(void *uaddr, const void *kaddr, size_t len) __attribute__ ((weak, alias ("copy_to_user")));
+TEE_Result do_copy_from_user(void *kaddr, const void *uaddr, size_t len) __attribute__ ((weak, alias ("copy_from_user")));
+TEE_Result do_clear_user(void *uaddr, size_t len)  __attribute__ ((weak, alias ("clear_user")));

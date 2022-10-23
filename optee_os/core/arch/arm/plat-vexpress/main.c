@@ -127,6 +127,92 @@ static TEE_Result init_console_itr(void)
 driver_init(init_console_itr);
 #endif
 
+extern uint32_t init_vta_driver();
+extern uint32_t init_gen_pcie_driver();
+extern uint32_t init_drm_driver();
+extern uint32_t init_drm_nouveau_driver();
+extern uint32_t init_workqueue();
+extern uint32_t init_radix_tree();
+extern uint32_t init_drm_ttm();
+extern uint32_t init_tee_time();
+extern int buses_init(void);
+extern int devices_init(void);
+
+uint32_t init_drm_nouveau_int() {
+	uint32_t exceptions = thread_get_exceptions();
+	thread_set_exceptions(exceptions & ~THREAD_EXCP_ALL);
+	uint32_t ret = init_drm_nouveau_driver();
+	thread_set_exceptions(exceptions);
+	return ret;
+}
+
+// extern int init_edu_driver(void);
+// driver_init(init_edu_driver);
+driver_init(init_vta_driver);
+driver_init(init_drm_nouveau_int);
+driver_init(init_drm_ttm);
+driver_init(init_drm_driver);
+driver_init(init_gen_pcie_driver);
+driver_init(buses_init);
+driver_init(devices_init);
+driver_init(init_workqueue);
+driver_init(init_radix_tree);
+driver_init(init_tee_time);
+
+#define NOUVEAU_PRI_BASE    0x20000000
+#define NOUVEAU_PRI_SIZE    0x01000000
+
+#define NOUVEAU_BIOS_BASE   0x21000000
+#define NOUVEAU_BIOS_SIZE   0x00080000
+
+#define NOUVEAU_PCI_BASE	0x2eff0000
+#define NOUVEAU_PCI_SIZE	0x00010000
+
+#define NOUVEAU_PRAMIN_BASE 0x18010000000
+#define NOUVEAU_PRAMIN_SIZE 0x00000f00000
+
+#define NOUVEAU_TTM_BO_BASE 0x18000200000
+#define NOUVEAU_TTM_BO_SIZE 0x00000010000
+
+#define NOUVEAU_UNKNOWN_BASE 0x20bb0000
+#define NOUVEAU_UNKNOWN_SIZE 0x00010000
+
+// this is vta_base when it is enable
+#define NOUVEAU_CHANNEL_BASE 0x18000000000
+#define NOUVEAU_CHANNEL_SIZE 0x10000
+#define VTA_MEMORY_BASE 0x18000000000
+#define VTA_MEMORY_SIZE 0x8000000
+
+#define NOUVEAU2_PRAMIN_BASE 0x18050000000
+
+#define NOUVEAU2_TTM_BO_BASE 0x18040200000
+
+#define NOUVEAU2_CHANNEL_BASE 0x18040000000
+
+register_phys_mem_pgdir(MEM_AREA_IO_SEC, 0x10000000000, 0x10000000);
+register_phys_mem_pgdir(MEM_AREA_IO_SEC, NOUVEAU_PRI_BASE, NOUVEAU_PRI_SIZE);
+register_phys_mem_pgdir(MEM_AREA_IO_SEC, NOUVEAU_PCI_BASE, NOUVEAU_PCI_SIZE);
+register_phys_mem_pgdir(MEM_AREA_IO_SEC, NOUVEAU_BIOS_BASE, NOUVEAU_BIOS_SIZE);
+register_phys_mem_pgdir(MEM_AREA_IO_SEC, NOUVEAU_PRAMIN_BASE, NOUVEAU_PRAMIN_SIZE);
+register_phys_mem_pgdir(MEM_AREA_IO_SEC, NOUVEAU_TTM_BO_BASE, NOUVEAU_TTM_BO_SIZE);
+register_phys_mem_pgdir(MEM_AREA_IO_SEC, VTA_MEMORY_BASE, VTA_MEMORY_SIZE);
+register_phys_mem_pgdir(MEM_AREA_IO_SEC, NOUVEAU2_PRAMIN_BASE, NOUVEAU_PRAMIN_SIZE);
+register_phys_mem_pgdir(MEM_AREA_IO_SEC, NOUVEAU2_TTM_BO_BASE, NOUVEAU_TTM_BO_SIZE);
+register_phys_mem_pgdir(MEM_AREA_IO_SEC, NOUVEAU2_CHANNEL_BASE, NOUVEAU_CHANNEL_SIZE);
+
+#define VRAM_BASE 	((long)1 << 32)
+#define VHEAP_BASE 	(((long)1 << 32) + ((long)1 << 29))
+#define VHEAP_RAM_SIZE 	((long)1 << 29)
+
+#define EXTENDED_TA_RAM_SIZE (((long)1 << 27) - ((long)16 << 20))
+#define VRAM_RAM_SIZE (((long)1 << 29))
+
+#define TA_RAM_SIZE (((long)1 << 30))
+
+register_phys_mem_pgdir(MEM_AREA_RAM_SEC, VRAM_BASE,  VRAM_RAM_SIZE);
+register_phys_mem_pgdir(MEM_AREA_IO_SEC,  VHEAP_BASE, VHEAP_RAM_SIZE);
+register_phys_mem(MEM_AREA_TA_RAM, VRAM_BASE + VRAM_RAM_SIZE + VHEAP_RAM_SIZE, TA_RAM_SIZE);
+
 #ifdef CFG_TZC400
 register_phys_mem_pgdir(MEM_AREA_IO_SEC, TZC400_BASE, TZC400_REG_SIZE);
 

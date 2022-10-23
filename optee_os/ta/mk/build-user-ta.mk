@@ -33,7 +33,7 @@ link-ldflags$(sm) := -static
 endif
 
 libdirs  = $(ta-dev-kit-dir$(sm))/lib
-libnames = utils utee
+libnames = utils-user utee
 ifeq ($(CFG_TA_MBEDTLS),y)
 libnames += mbedtls
 endif
@@ -54,3 +54,37 @@ include mk/compile.mk
 # Install TA libraries before in-tree TAs can be linked
 additional-link-deps := $(ta_dev_kit-files-lib)
 include  ta/arch/$(ARCH)/link.mk
+
+muslcdir := $(ta-dev-kit-dir$(sm))/include/muslc
+gdevdir := $(ta-dev-kit-dir$(sm))/include/gdev
+cxxdir := $(ta-dev-kit-dir$(sm))/include/c++/v1
+
+MUSLC_ARCH := arm
+ifeq ($(ta-target),ta_arm64)
+MUSLC_ARCH := aarch64
+endif
+
+musl-cflags$(sm) :=	-I$(muslcdir)/arch/$(MUSLC_ARCH) \
+					-I$(muslcdir)/arch/generic \
+					-I$(muslcdir)/src/include \
+					-I$(muslcdir)/include \
+					-I$(gdevdir)/common \
+					$(cflags$(sm))
+
+cflags$(sm) := $(musl-cflags$(sm))
+
+# musl-cppflags$(sm) := $(cppflags$(sm)) \
+# 					-I$(muslcdir)/arch/$(MUSLC_ARCH) \
+# 					-I$(muslcdir)/include
+
+# cppflags$(sm) := $(musl-cppflags$(sm))
+cppflags$(sm) += -std=c++17
+
+ta_dev_kit: $(out-dir)/export-$(ta-target)/ta/$(user-ta-uuid).ta
+
+$(out-dir)/export-$(ta-target)/ta/$(user-ta-uuid).ta: $(link-out-dir$(sm))/$(user-ta-uuid).ta
+	$(q)mkdir -p $(dir $@)
+	@$(cmd-echo-silent) '  INSTALL $@'
+	$(q)cp -P $< $@
+
+cleanfiles += $(out-dir)/export-$(ta-target)/ta/$(user-ta-uuid).ta

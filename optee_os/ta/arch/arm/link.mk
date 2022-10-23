@@ -27,6 +27,7 @@ cleanfiles += $(link-out-dir$(sm))/$(user-ta-uuid).ta
 cleanfiles += $(link-script-pp$(sm)) $(link-script-dep$(sm))
 
 link-ldflags  = -e__ta_entry -pie
+link-ldflags += --gc-sections
 link-ldflags += -T $(link-script-pp$(sm))
 link-ldflags += -Map=$(link-out-dir$(sm))/$(user-ta-uuid).map
 link-ldflags += --sort-section=alignment
@@ -54,7 +55,8 @@ link-ldadd += --start-group
 link-ldadd += $(addprefix -l,$(libnames))
 ifneq (,$(filter %.cpp,$(srcs)))
 link-ldflags += --eh-frame-hdr
-link-ldadd += $(libstdc++$(sm)) $(libgcc_eh$(sm))
+# link-ldadd += $(libstdc++$(sm)) $(libgcc_eh$(sm))
+link-ldadd += -lcxx -lc++ -lc++abi -lunwind
 endif
 link-ldadd += --end-group
 
@@ -105,7 +107,8 @@ cmd-echo$(user-ta-uuid) := SIGNENC
 endif
 $(link-out-dir$(sm))/$(user-ta-uuid).ta: \
 			$(link-out-dir$(sm))/$(user-ta-uuid).stripped.elf \
-			$(TA_SIGN_KEY)
+			$(TA_SIGN_KEY) \
+			$(lastword $(SIGN_ENC))
 	@$(cmd-echo-silent) '  $$(cmd-echo$(user-ta-uuid)) $$@'
 	$(q)$(SIGN_ENC) --key $(TA_SIGN_KEY) $$(crypt-args$(user-ta-uuid)) \
 		--uuid $(user-ta-uuid) --ta-version $(user-ta-version) \

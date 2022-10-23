@@ -23,4 +23,19 @@ srcs-$(CFG_SHOW_CONF_ON_BOOT) += show_conf.c
 srcs-y += user_mode_ctx.c
 srcs-$(CFG_CORE_TPM_EVENT_LOG) += tpm.c
 srcs-y += initcall.c
-srcs-y += user_access.c
+srcs-$(CFG_WITH_USER_TA) += user_access.c
+srcs-y += mutex.c
+srcs-$(CFG_LOCKDEP) += mutex_lockdep.c
+srcs-y += wait_queue.c
+
+ifeq ($(CFG_WITH_USER_TA),y)
+srcs-y += user_ta.c
+srcs-$(CFG_REE_FS_TA) += ree_fs_ta.c
+srcs-$(CFG_EARLY_TA) += early_ta.c
+srcs-$(CFG_SECSTOR_TA) += secstor_ta.c
+endif
+
+srcs-$(CFG_EMBEDDED_TS) += embedded_ts.c
+srcs-y += pseudo_ta.c
+
+srcs-y += mm_fd.c

@@ -57,6 +57,11 @@ $(lib-libfile): $(objs)
 	@$(cmd-echo-silent) '  AR      $$@'
 	@mkdir -p $$(dir $$@)
 	$$(q)rm -f $$@ && $$(AR$(sm)) rcs $$@ $$^
+ifdef lib-ar-y
+	@echo "  AR      $$@ < $(lib-ar-y)"
+	@sed "s#ORIGIN#$$@#g" $(lib-ar-y) | sed "s#TARGET#$$@.bak.a#g"|ar -M
+	@mv $$@.bak.a $$@
+endif
 endif
 ifeq ($(CFG_ULIBS_SHARED),y)
 $(lib-shlibfile): $(objs) $(lib-needed-so-files)
@@ -95,3 +100,5 @@ lib-shlibtafile	:=
 lib-libuuidln	:=
 lib-needed-so-files :=
 libl :=
+lib-ldflags-y :=
+lib-ar-y :=

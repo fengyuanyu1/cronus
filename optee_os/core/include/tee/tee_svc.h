@@ -10,6 +10,7 @@
 #include <types_ext.h>
 #include <tee_api_types.h>
 #include <utee_types.h>
+#include <tee/tee_posix_fs.h>
 
 struct tee_ta_session;
 
@@ -74,4 +75,29 @@ TEE_Result syscall_wait(unsigned long timeout);
 TEE_Result syscall_get_time(unsigned long cat, TEE_Time *time);
 TEE_Result syscall_set_ta_time(const TEE_Time *time);
 
+/* syscall of posix fs*/
+#define POSIX_FS posix_direct_ree_fs
+
+#define TRACE_RET(ret) \
+	if (ret != TEE_SUCCESS) \
+		DMSG("TA_SYSCALL %s -> %lx\n", __FUNCTION__, ret); \
+	return ret;
+
+// fd forwarding
+TEE_Result syscall_posix_open(const char *filename, int flag, int mode, int *fd);
+TEE_Result syscall_posix_close(int fd);
+
+// fs
+TEE_Result syscall_fs_read(int fd, void *buf, size_t count, size_t off, ssize_t *rsize);
+TEE_Result syscall_fs_write(int fd, const void *buf, size_t count, size_t off, ssize_t *wsize);
+
+// device
+TEE_Result syscall_dev_ioctl(int fd, unsigned long request, void* args, int *ret_val);
+
+// mm
+TEE_Result syscall_mmap(void *addr, size_t length, int prot, int flags,
+                int fd, long offset, void **mapped_addr);
+TEE_Result syscall_mremap(void *old_address, size_t old_size,
+            size_t new_size, int flags, void **new_addr);
+TEE_Result syscall_munmap(void *addr, size_t len, int *ret);
 #endif /* TEE_SVC_H */

@@ -27,6 +27,35 @@ static enum pkcs11_rc get_ready_session(struct pkcs11_session *session)
 	return PKCS11_CKR_OK;
 }
 
+static enum processing_func func_for_cmd(enum pkcs11_ta_cmd cmd)
+{
+	switch (cmd) {
+	case PKCS11_CMD_ENCRYPT_UPDATE:
+	case PKCS11_CMD_ENCRYPT_ONESHOT:
+	case PKCS11_CMD_ENCRYPT_FINAL:
+		return PKCS11_FUNCTION_ENCRYPT;
+	case PKCS11_CMD_DECRYPT_UPDATE:
+	case PKCS11_CMD_DECRYPT_ONESHOT:
+	case PKCS11_CMD_DECRYPT_FINAL:
+		return PKCS11_FUNCTION_DECRYPT;
+	case PKCS11_CMD_SIGN_ONESHOT:
+	case PKCS11_CMD_SIGN_UPDATE:
+	case PKCS11_CMD_SIGN_FINAL:
+		return PKCS11_FUNCTION_SIGN;
+	case PKCS11_CMD_VERIFY_ONESHOT:
+	case PKCS11_CMD_VERIFY_UPDATE:
+	case PKCS11_CMD_VERIFY_FINAL:
+		return PKCS11_FUNCTION_VERIFY;
+	case PKCS11_CMD_DIGEST_UPDATE:
+	case PKCS11_CMD_DIGEST_KEY:
+	case PKCS11_CMD_DIGEST_ONESHOT:
+	case PKCS11_CMD_DIGEST_FINAL:
+		return PKCS11_FUNCTION_DIGEST;
+	default:
+		return PKCS11_FUNCTION_UNKNOWN;
+	}
+}
+
 static bool func_matches_state(enum processing_func function,
 			       enum pkcs11_proc_state state)
 {
@@ -129,9 +158,6 @@ static enum pkcs11_rc generate_random_key_value(struct obj_attrs **head)
 		return PKCS11_CKR_ATTRIBUTE_VALUE_INVALID;
 	}
 	TEE_MemMove(&value_len, data, data_size);
-
-	if (get_key_type(*head) == PKCS11_CKK_GENERIC_SECRET)
-		value_len = (value_len + 7) / 8;
 
 	/* Remove the default empty value attribute if found */
 	rc = remove_empty_attribute(head, PKCS11_CKA_VALUE);
@@ -316,9 +342,11 @@ enum pkcs11_rc entry_processing_init(struct pkcs11_client *client,
 	if (rc)
 		return rc;
 
-	rc = serialargs_get(&ctrlargs, &key_handle, sizeof(uint32_t));
-	if (rc)
-		return rc;
+	if (function != PKCS11_FUNCTION_DIGEST) {
+		rc = serialargs_get(&ctrlargs, &key_handle, sizeof(uint32_t));
+		if (rc)
+			return rc;
+	}
 
 	rc = serialargs_alloc_get_one_attribute(&ctrlargs, &proc_params);
 	if (rc)
@@ -333,10 +361,12 @@ enum pkcs11_rc entry_processing_init(struct pkcs11_client *client,
 	if (rc)
 		goto out;
 
-	obj = pkcs11_handle2object(key_handle, session);
-	if (!obj) {
-		rc = PKCS11_CKR_KEY_HANDLE_INVALID;
-		goto out;
+	if (function != PKCS11_FUNCTION_DIGEST) {
+		obj = pkcs11_handle2object(key_handle, session);
+		if (!obj) {
+			rc = PKCS11_CKR_KEY_HANDLE_INVALID;
+			goto out;
+		}
 	}
 
 	rc = set_processing_state(session, function, obj, NULL);
@@ -349,17 +379,23 @@ enum pkcs11_rc entry_processing_init(struct pkcs11_client *client,
 	if (rc)
 		goto out;
 
-	rc = check_parent_attrs_against_processing(proc_params->id, function,
-						   obj->attributes);
-	if (rc)
-		goto out;
+	if (obj) {
+		rc = check_parent_attrs_against_processing(proc_params->id,
+							   function,
+							   obj->attributes);
+		if (rc)
+			goto out;
 
-	rc = check_access_attrs_against_token(session, obj->attributes);
-	if (rc)
-		goto out;
+		rc = check_access_attrs_against_token(session,
+						      obj->attributes);
+		if (rc)
+			goto out;
+	}
 
 	if (processing_is_tee_symm(proc_params->id))
 		rc = init_symm_operation(session, function, proc_params, obj);
+	else if (processing_is_tee_digest(proc_params->id))
+		rc = init_digest_operation(session, proc_params);
 	else
 		rc = PKCS11_CKR_MECHANISM_INVALID;
 
@@ -398,6 +434,8 @@ enum pkcs11_rc entry_processing_step(struct pkcs11_client *client,
 	struct serialargs ctrlargs = { };
 	struct pkcs11_session *session = NULL;
 	enum pkcs11_mechanism_id mecha_type = PKCS11_CKM_UNDEFINED_ID;
+	uint32_t key_handle = 0;
+	struct pkcs11_object *obj = NULL;
 
 	if (!client ||
 	    TEE_PARAM_TYPE_GET(ptypes, 0) != TEE_PARAM_TYPE_MEMREF_INOUT)
@@ -409,12 +447,37 @@ enum pkcs11_rc entry_processing_step(struct pkcs11_client *client,
 	if (rc)
 		return rc;
 
+	if (step == PKCS11_FUNC_STEP_UPDATE_KEY) {
+		assert(function == PKCS11_FUNCTION_DIGEST);
+
+		rc = serialargs_get(&ctrlargs, &key_handle, sizeof(uint32_t));
+		if (rc)
+			return rc;
+	}
+
 	if (serialargs_remaining_bytes(&ctrlargs))
 		return PKCS11_CKR_ARGUMENTS_BAD;
 
 	rc = get_active_session(session, function);
 	if (rc)
 		return rc;
+
+	if (step == PKCS11_FUNC_STEP_UPDATE_KEY) {
+		assert(function == PKCS11_FUNCTION_DIGEST);
+
+		obj = pkcs11_handle2object(key_handle, session);
+		if (!obj) {
+			rc = PKCS11_CKR_KEY_HANDLE_INVALID;
+			goto out;
+		}
+
+		rc = check_access_attrs_against_token(session,
+						      obj->attributes);
+		if (rc) {
+			rc = PKCS11_CKR_KEY_HANDLE_INVALID;
+			goto out;
+		}
+	}
 
 	mecha_type = session->processing->mecha_type;
 	rc = check_mechanism_against_processing(session, mecha_type,
@@ -425,10 +488,13 @@ enum pkcs11_rc entry_processing_step(struct pkcs11_client *client,
 	if (processing_is_tee_symm(mecha_type))
 		rc = step_symm_operation(session, function, step,
 					 ptypes, params);
+	else if (processing_is_tee_digest(mecha_type))
+		rc = step_digest_operation(session, step, obj, ptypes, params);
 	else
 		rc = PKCS11_CKR_MECHANISM_INVALID;
 
-	if (rc == PKCS11_CKR_OK && step == PKCS11_FUNC_STEP_UPDATE) {
+	if (rc == PKCS11_CKR_OK && (step == PKCS11_FUNC_STEP_UPDATE ||
+				    step == PKCS11_FUNC_STEP_UPDATE_KEY)) {
 		session->processing->updated = true;
 		DMSG("PKCS11 session%"PRIu32": processing %s %s",
 		     session->handle, id2str_proc(mecha_type),
@@ -438,6 +504,7 @@ enum pkcs11_rc entry_processing_step(struct pkcs11_client *client,
 out:
 	switch (step) {
 	case PKCS11_FUNC_STEP_UPDATE:
+	case PKCS11_FUNC_STEP_UPDATE_KEY:
 		if (rc != PKCS11_CKR_OK && rc != PKCS11_CKR_BUFFER_TOO_SMALL)
 			release_active_processing(session);
 		break;
@@ -449,4 +516,234 @@ out:
 	}
 
 	return rc;
+}
+
+enum pkcs11_rc entry_processing_key(struct pkcs11_client *client,
+				    uint32_t ptypes, TEE_Param *params,
+				    enum processing_func function)
+{
+	const uint32_t exp_pt = TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_INOUT,
+						TEE_PARAM_TYPE_NONE,
+						TEE_PARAM_TYPE_MEMREF_OUTPUT,
+						TEE_PARAM_TYPE_NONE);
+	TEE_Param *ctrl = params;
+	TEE_Param *out = params + 2;
+	enum pkcs11_rc rc = PKCS11_CKR_GENERAL_ERROR;
+	struct serialargs ctrlargs = { };
+	struct pkcs11_session *session = NULL;
+	struct pkcs11_attribute_head *proc_params = NULL;
+	struct pkcs11_object_head *template = NULL;
+	uint32_t parent_handle = 0;
+	uint32_t obj_handle = 0;
+	struct pkcs11_object *parent = NULL;
+	struct obj_attrs *head = NULL;
+	size_t template_size = 0;
+	void *out_buf = NULL;
+	uint32_t out_size = 0;
+
+	if (!client || ptypes != exp_pt ||
+	    out->memref.size != sizeof(obj_handle))
+		return PKCS11_CKR_ARGUMENTS_BAD;
+
+	serialargs_init(&ctrlargs, ctrl->memref.buffer, ctrl->memref.size);
+
+	rc = serialargs_get_session_from_handle(&ctrlargs, client, &session);
+	if (rc)
+		return rc;
+
+	rc = serialargs_get(&ctrlargs, &parent_handle, sizeof(uint32_t));
+	if (rc)
+		return rc;
+
+	rc = serialargs_alloc_get_one_attribute(&ctrlargs, &proc_params);
+	if (rc)
+		goto out_free;
+
+	rc = serialargs_alloc_get_attributes(&ctrlargs, &template);
+	if (rc)
+		goto out_free;
+
+	if (serialargs_remaining_bytes(&ctrlargs)) {
+		rc = PKCS11_CKR_ARGUMENTS_BAD;
+		goto out_free;
+	}
+
+	/* Return error if processing already active */
+	rc = get_ready_session(session);
+	if (rc)
+		goto out_free;
+
+	/* Check parent handle */
+	parent = pkcs11_handle2object(parent_handle, session);
+	if (!parent) {
+		rc = PKCS11_CKR_KEY_HANDLE_INVALID;
+		goto out_free;
+	}
+
+	/* Check if mechanism can be used for derivation function */
+	rc = check_mechanism_against_processing(session, proc_params->id,
+						function,
+						PKCS11_FUNC_STEP_INIT);
+	if (rc)
+		goto out_free;
+
+	/* Set the processing state to active */
+	rc = set_processing_state(session, function, parent, NULL);
+	if (rc)
+		goto out_free;
+
+	/*
+	 * Check if base/parent key has CKA_DERIVE set and its key type is
+	 * compatible with the mechanism passed
+	 */
+	rc = check_parent_attrs_against_processing(proc_params->id, function,
+						   parent->attributes);
+	if (rc) {
+		/*
+		 * CKR_KEY_FUNCTION_NOT_PERMITTED is not in the list of errors
+		 * specified with C_Derive/Unwrap() in the specification. So
+		 * return the next most appropriate error.
+		 */
+		if (rc == PKCS11_CKR_KEY_FUNCTION_NOT_PERMITTED)
+			rc = PKCS11_CKR_KEY_TYPE_INCONSISTENT;
+		goto out;
+	}
+
+	/* Check access of base/parent key */
+	rc = check_access_attrs_against_token(session, parent->attributes);
+	if (rc)
+		goto out;
+
+	template_size = sizeof(*template) + template->attrs_size;
+	/*
+	 * Prepare a clean initial state for the requested object attributes
+	 * using base/parent key attributes. Free temporary template once done.
+	 */
+	rc = create_attributes_from_template(&head, template, template_size,
+					     parent->attributes,
+					     function,
+					     proc_params->id,
+					     PKCS11_CKO_UNDEFINED_ID);
+	if (rc)
+		goto out;
+
+	TEE_Free(template);
+	template = NULL;
+
+	/* check_created_attrs() is called later once key size is known */
+
+	rc = check_created_attrs_against_processing(proc_params->id, head);
+	if (rc)
+		goto out;
+
+	rc = check_created_attrs_against_token(session, head);
+	if (rc)
+		goto out;
+
+	if (processing_is_tee_symm(proc_params->id)) {
+		/*
+		 * These derivation mechanism require encryption to be
+		 * performed on the data passed in proc_params by parent
+		 * key. Hence pass function as PKCS11_FUNCTION_ENCRYPT
+		 * to init_symm_operation()
+		 */
+		rc = init_symm_operation(session, PKCS11_FUNCTION_ENCRYPT,
+					 proc_params, parent);
+		if (rc)
+			goto out;
+
+		session->processing->mecha_type = proc_params->id;
+
+		rc = derive_key_by_symm_enc(session, &out_buf, &out_size);
+		if (rc)
+			goto out;
+	} else {
+		rc = PKCS11_CKR_MECHANISM_INVALID;
+		goto out;
+	}
+
+	rc = set_key_data(&head, out_buf, out_size);
+	if (rc)
+		goto out;
+
+	TEE_Free(out_buf);
+	out_buf = NULL;
+
+	TEE_Free(proc_params);
+	proc_params = NULL;
+
+	/*
+	 * Object is ready, register it and return a handle.
+	 */
+	rc = create_object(session, head, &obj_handle);
+	if (rc)
+		goto out;
+
+	/*
+	 * Now obj_handle (through the related struct pkcs11_object instance)
+	 * owns the serialized buffer that holds the object attributes.
+	 * We reset head to NULL as it is no more the buffer owner and would
+	 * be freed at function out.
+	 */
+	head = NULL;
+
+	TEE_MemMove(out->memref.buffer, &obj_handle, sizeof(obj_handle));
+	out->memref.size = sizeof(obj_handle);
+
+	DMSG("PKCS11 session %"PRIu32": derive secret %#"PRIx32,
+	     session->handle, obj_handle);
+
+out:
+	release_active_processing(session);
+out_free:
+	TEE_Free(proc_params);
+	TEE_Free(template);
+	TEE_Free(head);
+	TEE_Free(out_buf);
+
+	return rc;
+}
+
+enum pkcs11_rc entry_release_active_processing(struct pkcs11_client *client,
+					       uint32_t ptypes,
+					       TEE_Param *params)
+{
+	const uint32_t exp_pt = TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_INOUT,
+						TEE_PARAM_TYPE_NONE,
+						TEE_PARAM_TYPE_NONE,
+						TEE_PARAM_TYPE_NONE);
+	TEE_Param *ctrl = params;
+	enum pkcs11_rc rc = PKCS11_CKR_OK;
+	struct serialargs ctrlargs = { };
+	struct pkcs11_session *session = NULL;
+	enum processing_func function = PKCS11_FUNCTION_UNKNOWN;
+	uint32_t cmd = 0;
+
+	if (!client || ptypes != exp_pt)
+		return PKCS11_CKR_ARGUMENTS_BAD;
+
+	serialargs_init(&ctrlargs, ctrl->memref.buffer, ctrl->memref.size);
+
+	rc = serialargs_get_session_from_handle(&ctrlargs, client, &session);
+	if (rc)
+		return rc;
+
+	rc = serialargs_get_u32(&ctrlargs, &cmd);
+
+	if (serialargs_remaining_bytes(&ctrlargs))
+		return PKCS11_CKR_ARGUMENTS_BAD;
+
+	function = func_for_cmd(cmd);
+	if (function == PKCS11_FUNCTION_UNKNOWN)
+		return PKCS11_CKR_ARGUMENTS_BAD;
+
+	rc = get_active_session(session, function);
+	if (rc)
+		return rc;
+
+	release_active_processing(session);
+
+	DMSG("PKCS11 session %"PRIu32": release processing", session->handle);
+
+	return PKCS11_CKR_OK;
 }

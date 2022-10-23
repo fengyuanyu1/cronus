@@ -37,7 +37,7 @@ comp-cflags-warns-high = \
 	-Wwrite-strings \
 	-Wno-missing-field-initializers -Wno-format-zero-length
 comp-cflags-warns-medium = \
-	-Waggregate-return -Wredundant-decls
+	-Wredundant-decls
 comp-cflags-warns-low = \
 	-Wold-style-definition -Wstrict-aliasing=2 \
 	-Wundef
@@ -92,6 +92,15 @@ comp-flags-$2 = $$(filter-out $$(AFLAGS_REMOVE) $$(aflags-remove) \
 		   $$(AFLAGS) $$(comp-aflags$$(comp-sm-$2)) \
 		   $$(aflags$$(comp-sm-$2)) $$(aflags-$2))
 
+else ifeq ($$(filter %.s,$1),$1)
+comp-q-$2 := AS # one trailing space
+comp-compiler-$2 := $$(CC$(sm))
+comp-flags-$2 = $$(filter-out $$(AFLAGS_REMOVE) $$(aflags-remove) \
+			      $$(aflags-remove-$$(comp-sm-$2)) \
+			      $$(aflags-remove-$2), \
+		   $$(AFLAGS) $$(comp-aflags$$(comp-sm-$2)) \
+		   $$(aflags$$(comp-sm-$2)) $$(aflags-$2))
+
 else ifeq ($$(filter %.cpp,$1),$1)
 comp-q-$2 := CXX
 comp-compiler-$2 := $$(CXX$(sm))
@@ -101,10 +110,30 @@ comp-flags-$2 = $$(filter-out $$(CXXFLAGS_REMOVE) $$(cxxflags-remove) \
 		   $$(CXXFLAGS) $$(comp-cxxflags$$(comp-sm-$2)) \
 		   $$(cxxflags$$(comp-sm-$2)) $$(cxxflags-$2))
 
+else ifeq ($$(filter %.cc,$1),$1)
+comp-q-$2 := CXX
+comp-compiler-$2 := $$(CXX$(sm))
+comp-flags-$2 = $$(filter-out $$(CXXFLAGS_REMOVE) $$(cxxflags-remove) \
+			      $$(cxxflags-remove-$$(comp-sm-$2)) \
+			      $$(cxxflags-remove-$2), \
+		   $$(CXXFLAGS) $$(comp-cxxflags$$(comp-sm-$2)) \
+		   $$(cxxflags$$(comp-sm-$2)) $$(cxxflags-$2))
+
+else ifeq ($$(filter %.cu,$1),$1)
+comp-q-$2 := NVCC
+comp-compiler-$2 := /usr/local/cuda-11.4/bin/aarch64-linux-gnu-nvcc
+# comp-flags-$2 := -ccbin $$(filter-out %/ccache, $$(CXX$(sm)))
+nvcc-comp-flags-$2 = $$(filter-out $$(CXXFLAGS_REMOVE) $$(cxxflags-remove) \
+			      $$(cxxflags-remove-$$(comp-sm-$2)) \
+			      $$(cxxflags-remove-$2), \
+		   $$(CXXFLAGS) $$(comp-cxxflags$$(comp-sm-$2)) \
+		   $$(cxxflags$$(comp-sm-$2)) $$(cxxflags-$2))
+comp-flags-$2 := -arch sm_75
 else
 $$(error "Don't know what to do with $1")
 endif
 
+ifneq ($$(filter %.cu,$1),$1)
 comp-cppflags-$2 = $$(filter-out $$(CPPFLAGS_REMOVE) $$(cppflags-remove) \
 				 $$(cppflags-remove-$$(comp-sm-$2)) \
 				 $$(cppflags-remove-$2), \
@@ -118,6 +147,22 @@ comp-cppflags-$2 = $$(filter-out $$(CPPFLAGS_REMOVE) $$(cppflags-remove) \
 
 comp-flags-$2 += -MD -MF $$(comp-dep-$2) -MT $$@
 comp-flags-$2 += $$(comp-cppflags-$2)
+else
+# nvcc-comp-cppflags-$2 = $$(filter-out $$(CPPFLAGS_REMOVE) $$(cppflags-remove) \
+# 				 $$(cppflags-remove-$$(comp-sm-$2)) \
+# 				 $$(cppflags-remove-$2), \
+# 		      $$(nostdinc$$(comp-sm-$2)) $$(CPPFLAGS) \
+# 		      $$(addprefix -I,$$(incdirs$$(comp-sm-$2))) \
+# 		      $$(addprefix -I,$$(incdirs-lib$$(comp-lib-$2))) \
+# 		      $$(addprefix -I,$$(incdirs-$2)) \
+# 		      $$(cppflags$$(comp-sm-$2)) \
+# 		      $$(cppflags-lib$$(comp-lib-$2)) $$(cppflags-$2)) \
+# 		      -D__FILE_ID__=$$(subst -,_,$$(subst /,_,$$(subst .,_,$1)))
+
+# nvcc-comp-flags-$2 += -MD -MF $$(comp-dep-$2) -MT $$@
+# nvcc-comp-flags-$2 += $$(nvcc-comp-cppflags-$2) -nostdinc++
+# comp-flags-$2 += -Xcompiler "$$(nvcc-comp-flags-$2)"
+endif
 
 comp-cmd-$2 = $$(comp-compiler-$2) $$(comp-flags-$2) -c $$< -o $$@
 comp-objcpy-cmd-$2 = $$(OBJCOPY$(sm)) \
@@ -173,6 +218,7 @@ define _gen-asm-defines-file
 # c-filename in $1
 # h-filename in $2
 # s-filename in $3
+# Dependencies in $4
 
 FORCE-GENSRC$(sm): $(2)
 
@@ -208,7 +254,7 @@ comp-cmd-$3 = $$(CC$(sm)) $$(comp-flags-$3) -fverbose-asm -S $$< -o $$@
 -include $$(comp-cmd-file-$3)
 -include $$(comp-dep-$3)
 
-$3: $1 $(conf-file) FORCE
+$3: $1 $(conf-file) $(4) FORCE
 # Check if any prerequisites are newer than the target and
 # check if command line has changed
 	$$(if $$(strip $$(filter-out FORCE, $$?) \
@@ -239,7 +285,7 @@ $(2): $(3)
 endef
 
 define gen-asm-defines-file
-$(call _gen-asm-defines-file,$1,$2,$(dir $2).$(notdir $(2:.h=.s)))
+$(call _gen-asm-defines-file,$1,$2,$(dir $2).$(notdir $(2:.h=.s)),$(asm-defines-$(notdir $(1))-deps))
 endef
 
 $(foreach f,$(asm-defines-files),$(eval $(call gen-asm-defines-file,$(f),$(out-dir)/$(sm)/include/generated/$(basename $(notdir $(f))).h)))

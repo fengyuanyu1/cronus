@@ -18,16 +18,48 @@
 #include "sanitize_object.h"
 #include "serializer.h"
 
+/*
+ * Temporary list used to register allocated struct pkcs11_object instances
+ * so that destroy_object() can unconditionally remove the object from its
+ * list, being from an object destruction request or because object creation
+ * failed before being completed. Objects are moved to their target list at
+ * creation completion.
+ */
+LIST_HEAD(temp_obj_list, pkcs11_object) temporary_object_list =
+	LIST_HEAD_INITIALIZER(temp_obj_list);
+
+static struct ck_token *get_session_token(void *session);
+
 struct pkcs11_object *pkcs11_handle2object(uint32_t handle,
 					   struct pkcs11_session *session)
 {
-	return handle_lookup(&session->object_handle_db, handle);
+	struct pkcs11_object *object = NULL;
+
+	object = handle_lookup(get_object_handle_db(session), handle);
+	if (!object)
+		return NULL;
+
+	/*
+	 * If object is session only then no extra checks are needed as session
+	 * objects has flat access control space
+	 */
+	if (!object->token)
+		return object;
+
+	/*
+	 * Only allow access to token object if session is associated with
+	 * the token
+	 */
+	if (object->token != get_session_token(session))
+		return NULL;
+
+	return object;
 }
 
 uint32_t pkcs11_object2handle(struct pkcs11_object *obj,
 			      struct pkcs11_session *session)
 {
-	return handle_lookup_handle(&session->object_handle_db, obj);
+	return handle_lookup_handle(get_object_handle_db(session), obj);
 }
 
 /* Currently handle pkcs11 sessions and tokens */
@@ -108,22 +140,11 @@ void destroy_object(struct pkcs11_session *session, struct pkcs11_object *obj,
 		MSG_RAW("[destroy] obj uuid %pUl", (void *)obj->uuid);
 #endif
 
-	/*
-	 * Remove from session list only if it was published.
-	 *
-	 * This depends on obj->link.le_prev always pointing on the
-	 * link.le_next element in the previous object in the list even if
-	 * there's only a single object in the list. In the first object in
-	 * the list obj->link.le_prev instead points to lh_first in the
-	 * list head. If list implementation is changed we need to revisit
-	 * this.
-	 */
-	if (obj->link.le_next || obj->link.le_prev)
-		LIST_REMOVE(obj, link);
+	LIST_REMOVE(obj, link);
 
 	if (session_only) {
 		/* Destroy object due to session closure */
-		handle_put(&session->object_handle_db,
+		handle_put(get_object_handle_db(session),
 			   pkcs11_object2handle(obj, session));
 		cleanup_volatile_obj_ref(obj);
 
@@ -138,17 +159,18 @@ void destroy_object(struct pkcs11_session *session, struct pkcs11_object *obj,
 		    unregister_persistent_object(session->token, obj->uuid))
 			TEE_Panic(0);
 
-		handle_put(&session->object_handle_db,
+		handle_put(get_object_handle_db(session),
 			   pkcs11_object2handle(obj, session));
 		cleanup_persistent_object(obj, session->token);
 	} else {
-		handle_put(&session->object_handle_db,
+		handle_put(get_object_handle_db(session),
 			   pkcs11_object2handle(obj, session));
 		cleanup_volatile_obj_ref(obj);
 	}
 }
 
-static struct pkcs11_object *create_obj_instance(struct obj_attrs *head)
+static struct pkcs11_object *create_obj_instance(struct obj_attrs *head,
+						 struct ck_token *token)
 {
 	struct pkcs11_object *obj = NULL;
 
@@ -159,14 +181,16 @@ static struct pkcs11_object *create_obj_instance(struct obj_attrs *head)
 	obj->key_handle = TEE_HANDLE_NULL;
 	obj->attribs_hdl = TEE_HANDLE_NULL;
 	obj->attributes = head;
+	obj->token = token;
 
 	return obj;
 }
 
 struct pkcs11_object *create_token_object(struct obj_attrs *head,
-					  TEE_UUID *uuid)
+					  TEE_UUID *uuid,
+					  struct ck_token *token)
 {
-	struct pkcs11_object *obj = create_obj_instance(head);
+	struct pkcs11_object *obj = create_obj_instance(head, token);
 
 	if (obj)
 		obj->uuid = uuid;
@@ -198,12 +222,14 @@ enum pkcs11_rc create_object(void *sess, struct obj_attrs *head,
 	 * are expected consistent and reliable.
 	 */
 
-	obj = create_obj_instance(head);
+	obj = create_obj_instance(head, NULL);
 	if (!obj)
 		return PKCS11_CKR_DEVICE_MEMORY;
 
+	LIST_INSERT_HEAD(&temporary_object_list, obj, link);
+
 	/* Create a handle for the object in the session database */
-	obj_handle = handle_get(&session->object_handle_db, obj);
+	obj_handle = handle_get(get_object_handle_db(session), obj);
 	if (!obj_handle) {
 		rc = PKCS11_CKR_DEVICE_MEMORY;
 		goto err;
@@ -244,10 +270,17 @@ enum pkcs11_rc create_object(void *sess, struct obj_attrs *head,
 		if (rc)
 			goto err;
 
+		TEE_CloseObject(obj->attribs_hdl);
+		obj->attribs_hdl = TEE_HANDLE_NULL;
+
+		/* Move object from temporary list to target token list */
+		LIST_REMOVE(obj, link);
 		LIST_INSERT_HEAD(&session->token->object_list, obj, link);
 	} else {
-		rc = PKCS11_CKR_OK;
+		/* Move object from temporary list to target session list */
+		LIST_REMOVE(obj, link);
 		LIST_INSERT_HEAD(get_session_objects(session), obj, link);
+		rc = PKCS11_CKR_OK;
 	}
 
 	*out_handle = obj_handle;
@@ -256,7 +289,7 @@ enum pkcs11_rc create_object(void *sess, struct obj_attrs *head,
 err:
 	/* make sure that supplied "head" isn't freed */
 	obj->attributes = NULL;
-	handle_put(&session->object_handle_db, obj_handle);
+	handle_put(get_object_handle_db(session), obj_handle);
 	if (get_bool(head, PKCS11_CKA_TOKEN))
 		cleanup_persistent_object(obj, session->token);
 	else
@@ -348,7 +381,7 @@ enum pkcs11_rc entry_create_object(struct pkcs11_client *client,
 
 	/*
 	 * Now obj_handle (through the related struct pkcs11_object
-	 * instance) owns the serialised buffer that holds the object
+	 * instance) owns the serialized buffer that holds the object
 	 * attributes. We clear reference in head to NULL as the serializer
 	 * object is now referred from obj_handle. This allows smooth pass
 	 * through free at function exit.
@@ -466,10 +499,12 @@ enum pkcs11_rc entry_find_objects_init(struct pkcs11_client *client,
 	enum pkcs11_rc rc = PKCS11_CKR_GENERAL_ERROR;
 	struct serialargs ctrlargs = { };
 	struct pkcs11_session *session = NULL;
+	struct pkcs11_session *sess = NULL;
 	struct pkcs11_object_head *template = NULL;
 	struct obj_attrs *req_attrs = NULL;
 	struct pkcs11_object *obj = NULL;
 	struct pkcs11_find_objects *find_ctx = NULL;
+	struct handle_db *object_db = NULL;
 
 	if (!client || ptypes != exp_pt)
 		return PKCS11_CKR_ARGUMENTS_BAD;
@@ -538,18 +573,31 @@ enum pkcs11_rc entry_find_objects_init(struct pkcs11_client *client,
 	 * candidates that match caller attributes.
 	 */
 
-	LIST_FOREACH(obj, &session->object_list, link) {
-		if (check_access_attrs_against_token(session, obj->attributes))
-			continue;
+	/* Scan all session objects first */
+	TAILQ_FOREACH(sess, get_session_list(session), link) {
+		LIST_FOREACH(obj, &sess->object_list, link) {
+			/*
+			 * Skip all token objects as they could be from
+			 * different token which the session does not have
+			 * access
+			 */
+			if (obj->token)
+				continue;
 
-		if (!attributes_match_reference(obj->attributes, req_attrs))
-			continue;
+			if (!attributes_match_reference(obj->attributes,
+							req_attrs))
+				continue;
 
-		rc = find_ctx_add(find_ctx, pkcs11_object2handle(obj, session));
-		if (rc)
-			goto out;
+			rc = find_ctx_add(find_ctx,
+					  pkcs11_object2handle(obj, session));
+			if (rc)
+				goto out;
+		}
 	}
 
+	object_db = get_object_handle_db(session);
+
+	/* Scan token objects */
 	LIST_FOREACH(obj, &session->token->object_list, link) {
 		uint32_t handle = 0;
 		bool new_load = false;
@@ -572,10 +620,10 @@ enum pkcs11_rc entry_find_objects_init(struct pkcs11_client *client,
 			continue;
 		}
 
-		/* Object may not yet be published in the session */
+		/* Resolve object handle for object */
 		handle = pkcs11_object2handle(obj, session);
 		if (!handle) {
-			handle = handle_get(&session->object_handle_db, obj);
+			handle = handle_get(object_db, obj);
 			if (!handle) {
 				rc = PKCS11_CKR_DEVICE_MEMORY;
 				goto out;
@@ -657,8 +705,8 @@ void release_session_find_obj_context(struct pkcs11_session *session)
 	session->find_ctx = NULL;
 }
 
-uint32_t entry_find_objects_final(struct pkcs11_client *client,
-				  uint32_t ptypes, TEE_Param *params)
+enum pkcs11_rc entry_find_objects_final(struct pkcs11_client *client,
+					uint32_t ptypes, TEE_Param *params)
 {
 	const uint32_t exp_pt = TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_INOUT,
 						TEE_PARAM_TYPE_NONE,
@@ -689,8 +737,8 @@ uint32_t entry_find_objects_final(struct pkcs11_client *client,
 	return PKCS11_CKR_OK;
 }
 
-uint32_t entry_get_attribute_value(struct pkcs11_client *client,
-				   uint32_t ptypes, TEE_Param *params)
+enum pkcs11_rc entry_get_attribute_value(struct pkcs11_client *client,
+					 uint32_t ptypes, TEE_Param *params)
 {
 	const uint32_t exp_pt = TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_INOUT,
 						TEE_PARAM_TYPE_NONE,
@@ -775,38 +823,57 @@ uint32_t entry_get_attribute_value(struct pkcs11_client *client,
 
 	for (; cur < end; cur += len) {
 		struct pkcs11_attribute_head *cli_ref = (void *)cur;
+		struct pkcs11_attribute_head cli_head = { };
+		void *data_ptr = NULL;
 
-		len = sizeof(*cli_ref) + cli_ref->size;
+		/* Make copy of header so that is aligned properly. */
+		TEE_MemMove(&cli_head, cli_ref, sizeof(cli_head));
+
+		len = sizeof(*cli_ref) + cli_head.size;
+
+		/* We don't support getting value of indirect templates */
+		if (pkcs11_attr_has_indirect_attributes(cli_head.id)) {
+			attr_type_invalid = 1;
+			continue;
+		}
 
 		/* Check 1. */
-		if (!attribute_is_exportable(cli_ref, obj)) {
-			cli_ref->size = PKCS11_CK_UNAVAILABLE_INFORMATION;
+		if (!attribute_is_exportable(&cli_head, obj)) {
+			cli_head.size = PKCS11_CK_UNAVAILABLE_INFORMATION;
+			TEE_MemMove(&cli_ref->size, &cli_head.size,
+				    sizeof(cli_head.size));
 			attr_sensitive = 1;
 			continue;
 		}
+
+		/* Get real data pointer from template data */
+		data_ptr = cli_head.size ? cli_ref->data : NULL;
 
 		/*
 		 * We assume that if size is 0, pValue was NULL, so we return
 		 * the size of the required buffer for it (3., 4.)
 		 */
-		rc = get_attribute(obj->attributes, cli_ref->id,
-				   cli_ref->size ? cli_ref->data : NULL,
-				   &cli_ref->size);
+		rc = get_attribute(obj->attributes, cli_head.id, data_ptr,
+				   &cli_head.size);
 		/* Check 2. */
 		switch (rc) {
 		case PKCS11_CKR_OK:
 			break;
 		case PKCS11_RV_NOT_FOUND:
-			cli_ref->size = PKCS11_CK_UNAVAILABLE_INFORMATION;
+			cli_head.size = PKCS11_CK_UNAVAILABLE_INFORMATION;
 			attr_type_invalid = 1;
 			break;
 		case PKCS11_CKR_BUFFER_TOO_SMALL:
-			buffer_too_small = 1;
+			if (data_ptr)
+				buffer_too_small = 1;
 			break;
 		default:
 			rc = PKCS11_CKR_GENERAL_ERROR;
 			goto out;
 		}
+
+		TEE_MemMove(&cli_ref->size, &cli_head.size,
+			    sizeof(cli_head.size));
 	}
 
 	/*
@@ -840,8 +907,8 @@ out:
 	return rc;
 }
 
-uint32_t entry_get_object_size(struct pkcs11_client *client,
-			       uint32_t ptypes, TEE_Param *params)
+enum pkcs11_rc entry_get_object_size(struct pkcs11_client *client,
+				     uint32_t ptypes, TEE_Param *params)
 {
 	const uint32_t exp_pt = TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_INOUT,
 						TEE_PARAM_TYPE_NONE,
@@ -888,4 +955,283 @@ uint32_t entry_get_object_size(struct pkcs11_client *client,
 	TEE_MemMove(out->memref.buffer, &obj_size, sizeof(obj_size));
 
 	return PKCS11_CKR_OK;
+}
+
+enum pkcs11_rc entry_set_attribute_value(struct pkcs11_client *client,
+					 uint32_t ptypes, TEE_Param *params)
+{
+	const uint32_t exp_pt = TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_INOUT,
+						TEE_PARAM_TYPE_NONE,
+						TEE_PARAM_TYPE_NONE,
+						TEE_PARAM_TYPE_NONE);
+	TEE_Param *ctrl = params;
+	enum pkcs11_rc rc = PKCS11_CKR_GENERAL_ERROR;
+	struct serialargs ctrlargs = { };
+	struct pkcs11_session *session = NULL;
+	struct pkcs11_object_head *template = NULL;
+	size_t template_size = 0;
+	struct pkcs11_object *obj = NULL;
+	struct obj_attrs *head = NULL;
+	uint32_t object_handle = 0;
+	enum processing_func function = PKCS11_FUNCTION_MODIFY;
+
+	if (!client || ptypes != exp_pt)
+		return PKCS11_CKR_ARGUMENTS_BAD;
+
+	serialargs_init(&ctrlargs, ctrl->memref.buffer, ctrl->memref.size);
+
+	rc = serialargs_get_session_from_handle(&ctrlargs, client, &session);
+	if (rc)
+		return rc;
+
+	rc = serialargs_get(&ctrlargs, &object_handle, sizeof(uint32_t));
+	if (rc)
+		return rc;
+
+	rc = serialargs_alloc_get_attributes(&ctrlargs, &template);
+	if (rc)
+		return rc;
+
+	if (serialargs_remaining_bytes(&ctrlargs)) {
+		rc = PKCS11_CKR_ARGUMENTS_BAD;
+		goto out;
+	}
+
+	obj = pkcs11_handle2object(object_handle, session);
+	if (!obj) {
+		rc = PKCS11_CKR_OBJECT_HANDLE_INVALID;
+		goto out;
+	}
+
+	/* Only session objects can be modified during a read-only session */
+	if (object_is_token(obj->attributes) &&
+	    !pkcs11_session_is_read_write(session)) {
+		DMSG("Can't modify persistent object in a RO session");
+		rc = PKCS11_CKR_SESSION_READ_ONLY;
+		goto out;
+	}
+
+	/*
+	 * Only public objects can be modified unless normal user is logged in
+	 */
+	rc = check_access_attrs_against_token(session, obj->attributes);
+	if (rc) {
+		rc = PKCS11_CKR_USER_NOT_LOGGED_IN;
+		goto out;
+	}
+
+	/* Objects with PKCS11_CKA_MODIFIABLE as false aren't modifiable */
+	if (!object_is_modifiable(obj->attributes)) {
+		rc = PKCS11_CKR_ACTION_PROHIBITED;
+		goto out;
+	}
+
+	template_size = sizeof(*template) + template->attrs_size;
+
+	/*
+	 * Prepare a clean initial state (@head) for the template. Helps in
+	 * removing any duplicates or inconsistent values from the
+	 * template.
+	 */
+	rc = create_attributes_from_template(&head, template, template_size,
+					     NULL, function,
+					     PKCS11_CKM_UNDEFINED_ID,
+					     PKCS11_CKO_UNDEFINED_ID);
+	if (rc)
+		goto out;
+
+	/* Check the attributes in @head to see if they are modifiable */
+	rc = check_attrs_against_modification(session, head, obj, function);
+	if (rc)
+		goto out;
+
+	/*
+	 * All checks complete. The attributes in @head have been checked and
+	 * can now be used to set/modify the object attributes.
+	 */
+	rc = modify_attributes_list(&obj->attributes, head);
+	if (rc)
+		goto out;
+
+	if (get_bool(obj->attributes, PKCS11_CKA_TOKEN)) {
+		rc = update_persistent_object_attributes(obj);
+		if (rc)
+			goto out;
+	}
+
+	DMSG("PKCS11 session %"PRIu32": set attributes %#"PRIx32,
+	     session->handle, object_handle);
+
+out:
+	TEE_Free(head);
+	TEE_Free(template);
+	return rc;
+}
+
+enum pkcs11_rc entry_copy_object(struct pkcs11_client *client, uint32_t ptypes,
+				 TEE_Param *params)
+{
+	const uint32_t exp_pt = TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_INOUT,
+						TEE_PARAM_TYPE_NONE,
+						TEE_PARAM_TYPE_MEMREF_OUTPUT,
+						TEE_PARAM_TYPE_NONE);
+	TEE_Param *ctrl = params;
+	TEE_Param *out = params + 2;
+	enum pkcs11_rc rc = PKCS11_CKR_GENERAL_ERROR;
+	struct serialargs ctrlargs = { };
+	struct pkcs11_session *session = NULL;
+	struct pkcs11_object_head *template = NULL;
+	struct obj_attrs *head = NULL;
+	struct obj_attrs *head_new = NULL;
+	size_t template_size = 0;
+	struct pkcs11_object *obj = NULL;
+	uint32_t object_handle = 0;
+	uint32_t obj_handle = 0;
+	enum processing_func function = PKCS11_FUNCTION_COPY;
+	enum pkcs11_class_id class = PKCS11_CKO_UNDEFINED_ID;
+
+	if (!client || ptypes != exp_pt ||
+	    out->memref.size != sizeof(obj_handle))
+		return PKCS11_CKR_ARGUMENTS_BAD;
+
+	serialargs_init(&ctrlargs, ctrl->memref.buffer, ctrl->memref.size);
+
+	rc = serialargs_get_session_from_handle(&ctrlargs, client, &session);
+	if (rc)
+		return rc;
+
+	rc = serialargs_get(&ctrlargs, &object_handle, sizeof(uint32_t));
+	if (rc)
+		return rc;
+
+	rc = serialargs_alloc_get_attributes(&ctrlargs, &template);
+	if (rc)
+		return rc;
+
+	if (serialargs_remaining_bytes(&ctrlargs)) {
+		rc = PKCS11_CKR_ARGUMENTS_BAD;
+		goto out;
+	}
+
+	obj = pkcs11_handle2object(object_handle, session);
+	if (!obj) {
+		rc = PKCS11_CKR_OBJECT_HANDLE_INVALID;
+		goto out;
+	}
+
+	/* Only session objects can be modified during a read-only session */
+	if (object_is_token(obj->attributes) &&
+	    !pkcs11_session_is_read_write(session)) {
+		DMSG("Can't modify persistent object in a RO session");
+		rc = PKCS11_CKR_SESSION_READ_ONLY;
+		goto out;
+	}
+
+	/*
+	 * Only public objects can be modified unless normal user is logged in
+	 */
+	rc = check_access_attrs_against_token(session, obj->attributes);
+	if (rc) {
+		rc = PKCS11_CKR_USER_NOT_LOGGED_IN;
+		goto out;
+	}
+
+	/* Objects with PKCS11_CKA_COPYABLE as false can't be copied */
+	if (!object_is_copyable(obj->attributes)) {
+		rc = PKCS11_CKR_ACTION_PROHIBITED;
+		goto out;
+	}
+
+	template_size = sizeof(*template) + template->attrs_size;
+
+	/*
+	 * Prepare a clean initial state (@head) for the template. Helps in
+	 * removing any duplicates or inconsistent values from the
+	 * template.
+	 */
+	rc = create_attributes_from_template(&head, template, template_size,
+					     NULL, function,
+					     PKCS11_CKM_UNDEFINED_ID,
+					     PKCS11_CKO_UNDEFINED_ID);
+	if (rc)
+		goto out;
+
+	/* Check the attributes in @head to see if they are modifiable */
+	rc = check_attrs_against_modification(session, head, obj, function);
+	if (rc)
+		goto out;
+
+	class = get_class(obj->attributes);
+
+	if (class == PKCS11_CKO_SECRET_KEY ||
+	    class == PKCS11_CKO_PRIVATE_KEY) {
+		/*
+		 * If CKA_EXTRACTABLE attribute in passed template (@head) is
+		 * modified to CKA_FALSE, CKA_NEVER_EXTRACTABLE should also
+		 * change to CKA_FALSE in copied obj. So, add it to the
+		 * passed template.
+		 */
+		uint8_t bbool = 0;
+		uint32_t size = sizeof(bbool);
+
+		rc = get_attribute(head, PKCS11_CKA_EXTRACTABLE, &bbool, &size);
+		if (!rc && !bbool) {
+			rc = add_attribute(&head, PKCS11_CKA_NEVER_EXTRACTABLE,
+					   &bbool, sizeof(uint8_t));
+			if (rc)
+				goto out;
+		}
+		rc = PKCS11_CKR_OK;
+	}
+
+	/*
+	 * All checks have passed. Create a copy of the serialized buffer which
+	 * holds the object attributes in @head_new for the new object
+	 */
+	template_size = sizeof(*obj->attributes) + obj->attributes->attrs_size;
+	head_new = TEE_Malloc(template_size, TEE_MALLOC_FILL_ZERO);
+	if (!head_new) {
+		rc = PKCS11_CKR_DEVICE_MEMORY;
+		goto out;
+	}
+
+	TEE_MemMove(head_new, obj->attributes, template_size);
+
+	/*
+	 * Modify the copied attribute @head_new based on the template @head
+	 * given by the callee
+	 */
+	rc = modify_attributes_list(&head_new, head);
+	if (rc)
+		goto out;
+
+	/*
+	 * At this stage the object is almost created: all its attributes are
+	 * referenced in @head_new, including the key value and are assumed
+	 * reliable. Now need to register it and get a handle for it.
+	 */
+	rc = create_object(session, head_new, &obj_handle);
+	if (rc)
+		goto out;
+
+	/*
+	 * Now obj_handle (through the related struct pkcs11_object
+	 * instance) owns the serialized buffer that holds the object
+	 * attributes. We clear reference in head to NULL as the serializer
+	 * object is now referred from obj_handle. This allows smooth pass
+	 * through free at function exit.
+	 */
+	head_new = NULL;
+
+	TEE_MemMove(out->memref.buffer, &obj_handle, sizeof(obj_handle));
+	out->memref.size = sizeof(obj_handle);
+
+	DMSG("PKCS11 session %"PRIu32": copy object %#"PRIx32,
+	     session->handle, obj_handle);
+
+out:
+	TEE_Free(head_new);
+	TEE_Free(head);
+	TEE_Free(template);
+	return rc;
 }

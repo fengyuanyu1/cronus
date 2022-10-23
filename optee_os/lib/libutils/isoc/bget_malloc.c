@@ -748,6 +748,12 @@ static void *get_payload_start_size(void *ptr, size_t *size)
 
 #endif
 
+extern int msize(void *ptr) {
+    int ret = 0;
+    get_payload_start_size(ptr, &ret);
+    return ret;
+}
+
 void free(void *ptr)
 {
 	free_helper(ptr, false);

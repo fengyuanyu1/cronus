@@ -3,7 +3,7 @@
  * Copyright (C) 2015 Freescale Semiconductor, Inc.
  * Copyright (c) 2016, Wind River Systems.
  * All rights reserved.
- * Copyright 2017-2019 NXP
+ * Copyright 2017-2020 NXP
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -31,6 +31,7 @@
 #define __IMX6_H__
 
 #include <registers/imx6-crm.h>
+#include <registers/imx6-dcp.h>
 
 #define UART1_BASE			0x2020000
 #define IOMUXC_BASE			0x020E0000
@@ -65,6 +66,12 @@
 #define AIPS2_SIZE			0x100000
 #define AIPS3_BASE			0x02200000
 #define AIPS3_SIZE			0x100000
+
+#if defined(CFG_MX6ULL)
+#define RNGB_BASE			0x02284000
+#elif defined(CFG_MX6SL) || defined(CFG_MX6SLL)
+#define RNGB_BASE			0x021b4000
+#endif
 
 #define SCU_BASE			0x00A00000
 #define PL310_BASE			0x00A02000

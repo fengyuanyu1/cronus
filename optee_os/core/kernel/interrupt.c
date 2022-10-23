@@ -3,8 +3,11 @@
  * Copyright (c) 2016-2019, Linaro Limited
  */
 
+#include <kernel/dt.h>
 #include <kernel/interrupt.h>
 #include <kernel/panic.h>
+#include <libfdt.h>
+#include <stdlib.h>
 #include <trace.h>
 #include <assert.h>
 
@@ -25,6 +28,24 @@ void itr_init(struct itr_chip *chip)
 	itr_chip = chip;
 }
 
+#ifdef CFG_DT
+int dt_get_irq(const void *fdt, int node)
+{
+	const uint32_t *prop = NULL;
+	int len = 0;
+	int it_num = DT_INFO_INVALID_INTERRUPT;
+
+	if (!itr_chip || !itr_chip->dt_get_irq)
+		return it_num;
+
+	prop = fdt_getprop(fdt, node, "interrupts", &len);
+	if (!prop)
+		return it_num;
+
+	return itr_chip->dt_get_irq(prop, len);
+}
+#endif
+
 void itr_handle(size_t it)
 {
 	struct itr_handler *h = NULL;
@@ -43,6 +64,33 @@ void itr_handle(size_t it)
 		EMSG("Disabling unhandled interrupt %zu", it);
 		itr_chip->ops->disable(itr_chip, it);
 	}
+}
+
+struct itr_handler *itr_alloc_add(size_t it, itr_handler_t handler,
+				  uint32_t flags, void *data)
+{
+	struct itr_handler *hdl = calloc(1, sizeof(*hdl));
+
+	if (hdl) {
+		hdl->it = it;
+		hdl->handler = handler;
+		hdl->flags = flags;
+		hdl->data = data;
+		itr_add(hdl);
+	}
+
+	return hdl;
+}
+
+void itr_free(struct itr_handler *hdl)
+{
+	if (!hdl)
+		return;
+
+	itr_chip->ops->disable(itr_chip, hdl->it);
+
+	SLIST_REMOVE(&handlers, hdl, itr_handler, link);
+	free(hdl);
 }
 
 void itr_add(struct itr_handler *h)
